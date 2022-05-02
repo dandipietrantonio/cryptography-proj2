@@ -16,9 +16,6 @@ PRIV_KEY = None
 
 app = Flask(__name__)
 
-def get_session_id(username):
-    return hashlib.sha512(str(username + str(datetime.now())).encode()).hexdigest()
-
 def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
 
@@ -33,6 +30,20 @@ def chat():
 @app.route("/login", methods=['POST', 'GET'])
 def login():
     if request.method == "POST":
+        print("Logging in...")
+        # Connect to the server
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((socket.gethostname(), 5003))
+
+        # Get sessionid from server
+        reqForSessionID = json.dumps(dict({"type": "login"}))
+        try:
+            s.sendall(bytes(reqForSessionID, encoding="utf-8"))
+        except Exception:
+            return redirect('/error/Could not establish connection to the server')
+        CUR_SESSION_ID = s.recv(2048).decode("utf-8")
+        print("Session ID: ", CUR_SESSION_ID)
+
         # Get info from form
         username = request.form['username']
         password = request.form['password']
@@ -43,26 +54,24 @@ def login():
             return redirect("/error/Password field empty")
 
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha512(str(SALT + password).encode())
+        hashed_password = hashlib.sha512(str(SALT + password).encode()).hexdigest()
+        hashed_password_with_session_id = hashlib.sha512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
         public_key, PRIV_KEY = get_key_pair()
-        session_id = get_session_id(username)
 
         # Prepare data to send
-        u = dict({"type": "login", "username": username, "password": hashed_password.hexdigest(), "public_key":public_key, "session_id":session_id})
+        u = dict({"username": username, "password": hashed_password_with_session_id, "public_key":public_key})
         userInfo = json.dumps(u)
 
         # Send user info to backend server
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((socket.gethostname(), 5003))
             s.sendall(bytes(userInfo, encoding="utf-8"))
         except Exception:
             return redirect('/error/Could not establish connection to the server')
 
         # Receive confirmation
-        msg = s.recv(1024)
+        msg = s.recv(1024).decode("utf-8")
         print(msg)
-        if msg.decode("utf-8") == "SUCCESS":
+        if msg == "SUCCESS":
             return(redirect("/chat"))
         return redirect("error/Error logging in")
     else:
