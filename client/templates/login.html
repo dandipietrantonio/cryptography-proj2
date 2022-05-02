@@ -1,0 +1,14 @@
+{% extends 'base.html' %} 
+
+{% block body %}
+<h1>Login to the service</h1>
+<form action="/login" method="POST">
+        <label for="username"><b>Username:</b></label>
+        <input type="text" name="username" id="username"><br>
+        <label for="password"><b>Password:</b></label>
+        <input type="password" name="password" id="password"><br>
+        <input type="submit" value="Login">
+    </form>
+</form>
+<p>Click <a href='/signup'>here</a> to sign up.</p>
+{% endblock %}
