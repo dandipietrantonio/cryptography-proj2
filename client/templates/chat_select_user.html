@@ -1,0 +1,14 @@
+{% extends 'base.html' %} 
+
+{% block body %}
+<h1>Chat</h1>
+
+<div id="select_user">
+    <h2>Please click a user to start a chat with them.</h2>
+    <ul>
+        {% for user in users %}
+            <li><a href={{ 'chatWith/' + user.username | string }}> {{ user.username }}</a></li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}

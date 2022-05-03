@@ -29,8 +29,47 @@ CIPHER = None
 
 app = Flask(__name__)
 
+class User():
+    def __init__(self, username):
+        self.username = username
+
+class Message():
+    def __init__(self, content, timestamp, author):
+        self.content = content
+        self.timestamp = timestamp
+        self.author = author
+
 def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
+
+"""
+Attempts to connect to the server. If successful, returns (True, socket). If
+not successful, returns (False, None)
+"""
+def connectToServer():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((socket.gethostname(), 5003))
+        return (True, s)
+    except:
+        return (False, s)
+
+"""
+Sends a dictionary through a web socket to the server.
+"""
+def send_dict_to_server(s, data):
+    # Add session id to the message if applicable
+    print("SENDING TO SERVER: ", data)
+    if "cur_session_id" in session:
+        data["sessionid"] = session["cur_session_id"]
+
+    # TODO: add MAC/digital signature to messages
+    json_data = json.dumps(data)
+    try:
+        s.sendall(bytes(json_data, encoding="utf-8"))
+        return True
+    except Exception:
+        return False
 
 @app.route("/")
 def index():
@@ -38,24 +77,68 @@ def index():
 
 @app.route("/chat")
 def chat():
-    return render_template('chat.html')
+    # Connect to the server
+    success, s = connectToServer()
+    if not success:
+        return redirect("/error/Error connecting to the server")
+
+    # Get the users from the server
+    reqForUsers = {"type": "getUsers"}
+    successfullySent = send_dict_to_server(s, reqForUsers)
+    if not successfullySent:
+        return redirect("/error/Error getting users from the server")
+    users =  eval(s.recv(2048).decode("utf-8"))
+
+    return render_template('chat_select_user.html', users=[User(username) for username in users])
+
+@app.route("/chatWith/<userChattingWith>", methods=['POST', 'GET'])
+def chatWith(userChattingWith):
+    if request.method == 'POST':
+        print("Want to send a msg")
+        # Connect to server
+        content = request.form['content']
+        success, s = connectToServer()
+        if not success:
+            return redirect("/error/Error connecting to the server")
+        
+        # Send messaage to the server
+        reqToSendMessage = {"type": "sendMsg", "recipient": userChattingWith, "content": content}
+        successfullySent = send_dict_to_server(s, reqToSendMessage)
+        if not successfullySent:
+            return redirect("/error/Error sending message to the server")
+
+        # Receive confirmation from the server
+        msg = s.recv(1024).decode("utf-8")
+        print("Received message from server")
+        print(msg)
+        if msg == "SUCCESS":
+            return(redirect("/chatWith/"+userChattingWith))
+        return redirect("error/Error logging in")
+    else:
+        # Connect to the server
+        success, s = connectToServer()
+        if not success:
+            return redirect("/error/Error connecting to the server")
+
+        # Get the messages from the server
+        reqForMessages = {"type": "getMessages", "recipient": userChattingWith}
+        successfullySent = send_dict_to_server(s, reqForMessages)
+        if not successfullySent:
+            return redirect("/error/Error getting users from the server")
+        messages =  eval(s.recv(2048).decode("utf-8"))
+        print(messages)
+
+        return render_template('chat.html', userChattingWith=userChattingWith, messages=[Message(m[0], m[1], m[2]) for m in messages])
+        # return render_template('chat.html', userChattingWith=userChattingWith, messages=[])
 
 @app.route("/login", methods=['POST', 'GET'])
 def login():
     if request.method == "POST":
         print("Logging in...")
         # Connect to the server
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((socket.gethostname(), 5003))
-
-        # Get sessionid from server
-        # reqForSessionID = json.dumps(dict({"type": "login"}))
-        # try:
-        #     s.sendall(bytes(reqForSessionID, encoding="utf-8"))
-        # except Exception:
-        #     return redirect('/error/Could not establish connection to the server')
-        # CUR_SESSION_ID = s.recv(2048).decode("utf-8")
-        # print("Session ID: ", CUR_SESSION_ID)
+        success, s = connectToServer()
+        if not success:
+            return redirect("/error/Failed to connect to the server.")
 
         # Get info from form
         username = request.form['username']
@@ -68,6 +151,7 @@ def login():
 
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
+
         hashed_password_with_session_id = hashlib.sha3_512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
 
         # Prepare and encrypt data to send
@@ -123,6 +207,7 @@ def signup():
 
         # Prepare data to send
         u = dict({"type": "add_user", "username": new_username, "password": hashed_password.hexdigest()})
+
         userInfo = marshal.dumps(u)
 
         # Send new user info to backend server
