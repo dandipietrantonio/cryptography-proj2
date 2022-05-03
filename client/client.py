@@ -19,6 +19,13 @@ app = Flask(__name__)
 def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
 
+"""
+Generates a MAC for msg, using symmetric key k. The MAC is generated as the 
+"""
+def generate_mac_for_msg(msg, k):
+    timestamp = datetime.now()
+
+
 @app.route("/")
 def index():
     return render_template('index.html')
@@ -54,8 +61,8 @@ def login():
             return redirect("/error/Password field empty")
 
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha512(str(SALT + password).encode()).hexdigest()
-        hashed_password_with_session_id = hashlib.sha512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
+        hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
+        hashed_password_with_session_id = hashlib.sha3_512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
         public_key, PRIV_KEY = get_key_pair()
 
         # Prepare data to send
@@ -90,7 +97,7 @@ def signup():
             return redirect("/error/Password left empty")
 
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha512(str(SALT + new_password).encode())
+        hashed_password = hashlib.sha3_512(str(SALT + new_password).encode())
 
         # Prepare data to send
         u = dict({"type": "add_user", "username": new_username, "password": hashed_password.hexdigest()})
