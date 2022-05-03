@@ -6,7 +6,7 @@ import pymysql
 from setuptools import setup
 from dotenv import load_dotenv
 from random import SystemRandom
-import datetime
+from datetime import datetime, timedelta
 import os
 import hashlib
 import cryptography
@@ -49,7 +49,8 @@ def login(db, username, password, session_id):
     res = cursor.fetchall()
 
     if(len(res) > 0):
-        expectedPw = hashlib.sha3_512(str(session_id + str(res[0][0])).encode()).hexdigest()
+        print("result is :", session_id, res[0][0])
+        expectedPw = hashlib.sha3_512((str(session_id)+res[0][0]).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
             # # Try adding public key and session id
             # try:
@@ -103,6 +104,13 @@ def getMessagesBetweenUsers(u1, u2):
     # The client expects tuples of messages, (content, timestamp, author)
     return [(r[4], r[3].strftime("%m/%d/%Y, %H:%M:%S"), r[1]) for r in res]
 
+# Input an int in UNIX timestamp format, check if the timestamp is valid
+# Return True if valid
+def validate_timestamp(request_timestamp):
+    request_time = datetime.fromtimestamp(request_timestamp)
+    request_time_hours_until_now = (datetime.now() - request_time) / timedelta(hours=1)
+    return 0 < request_time_hours_until_now <= SESSION_TTL_HOURS
+
 if __name__ == '__main__':
     # Database connection
     load_dotenv()
@@ -136,14 +144,40 @@ if __name__ == '__main__':
         cs, address = s.accept()
 
         req = marshal.loads(cs.recv(2048))
-        print("Received message")
-        print(req)
+        print("Received message", req)
         reqType = req["type"]
 
         # Take action depending on the type of message receieved
         if reqType=="add_user":
+            # Retrieve sessionid and find corresponding keys
+            # TODO: Validate if session id hasn't expire
+            client_sessionid_encrypted = req["sessionid_encrypted"]
+            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+            if client_sessionid not in sessionid_keys.keys():
+                # (The client hasn't have the capability to process such error, TODO)
+                cs.send(bytes("Session ID error", encoding="utf-8"))
+            client_keys = sessionid_keys[client_sessionid]
+
+            # Receive signup information from client
+            signup_info= marshal.loads(cs.recv(2048))
+            # Check timestamp
+            request_timestamp = int(float(signup_info['curr_timestamp']))
+            if not validate_timestamp(request_timestamp):
+                cs.send(bytes("Please restart application", encoding="utf-8"))
+            
+            # TODO: Check signature
+            # TODO: Pack signature checking into a function that can be called by all functionalities(signup, login, chat)
+
+            # Decrypt new user information
+            encrypted_new_user_info = signup_info['encrypted_new_user_info']
+            client_decryptor = client_keys['cipher'].decryptor()
+            decrypted_new_user_info = client_decryptor.update(encrypted_new_user_info) + client_decryptor.finalize()
+            user_info = marshal.loads(decrypted_new_user_info)
+            username = user_info['username']
+            password = user_info['password']
+            print("Signing Up")
             try:
-                add_user_to_db(db, req['username'], req['password'])
+                add_user_to_db(db, username, password)
                 cs.send(bytes("SUCCESS", encoding="utf-8"))
             except Exception as e:
                 cs.send(bytes("Username already taken", encoding="utf-8"))
@@ -156,26 +190,24 @@ if __name__ == '__main__':
                 # (The client hasn't have the capability to process such error, TODO)
                 cs.send(bytes("Session ID error", encoding="utf-8"))
             client_keys = sessionid_keys[client_sessionid]
-            
 
             # Receive Login Info from client
             login_info= marshal.loads(cs.recv(2048))
 
             # Check timestamp
-            request_timestamp = login_info['curr_timestamp']
-            request_time = datetime.fromtimestamp(request_timestamp)
-            request_time_hours_until_now = (datetime.datetime.now() - request_time) / datetime
-            if request_time_hours_until_now < 0 or request_time_hours_until_now > SESSION_TTL_HOURS:
+            request_timestamp = int(float(signup_info['curr_timestamp']))
+            if not validate_timestamp(request_timestamp):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
 
             # TODO: Check signature
+            # TODO: Pack signature checking into a function that can be called by all functionalities(signup, login, chat)
 
             # Decrypt user information
             encrypted_user_info = login_info['encrypted_user_info']
             client_decryptor = client_keys['cipher'].decryptor()
             decrypted_user_info = client_decryptor.update(encrypted_user_info) + client_decryptor.finalize()
             user_info = marshal.loads(decrypted_user_info)
-            username = user_info['user_name']
+            username = user_info['username']
             password = user_info['password']
             try:
                 
@@ -185,7 +217,7 @@ if __name__ == '__main__':
                     cs.send(bytes("Failure logging in", encoding="utf-8"))
             except:
 
-                cs.send(bytes("Failure logging in", encoding="utf-8"))
+                cs.send(bytes("Error", encoding="utf-8"))
         elif reqType=="getUsers":
             print("Sending users...")
             cs.send(str(getUsers()).encode())
@@ -222,7 +254,7 @@ if __name__ == '__main__':
             iv = os.urandom(16)
             private_key = os.urandom(32)
             MAC_key = os.urandom(32)
-            client_cipher = Cipher(algorithms.AES(private_key), modes.CBC(iv))
+            client_cipher = Cipher(algorithms.AES(private_key), modes.CTR(iv))
             # Send server public key, session_id, private keys to client
             sessionid = os.urandom(32)
             setup_info = marshal.dumps(dict({"session_id": sessionid, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}))

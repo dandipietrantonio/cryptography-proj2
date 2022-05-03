@@ -149,13 +149,13 @@ def login():
         if len(password) == 0:
             return redirect("/error/Password field empty")
 
+        curr_timestamp = str(datetime.timestamp(datetime.now()))
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
+        print("resultis:", CUR_SESSION_ID, hashed_password)
+        hashed_password_with_session_id = hashlib.sha3_512((str(CUR_SESSION_ID) + hashed_password).encode()).hexdigest()
 
-        hashed_password_with_session_id = hashlib.sha3_512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
-
-        # Prepare and encrypt data to send
-        curr_timestamp = str(datetime.datetime.timestamp(datetime.now()))
+        # Prepare login request and encrypt session id to send
         login_req = dict({"type":"login", "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED})
         login_req_bytes = marshal.dumps(login_req)
 
@@ -193,6 +193,11 @@ def login():
 @app.route("/signup", methods=['POST', 'GET'])
 def signup():
     if request.method == 'POST':
+        # Connect to the server
+        success, s = connectToServer()
+        if not success:
+            return redirect("/error/Failed to connect to the server.")
+
         # Get info from form
         new_username = request.form['username']
         new_password = request.form['password']
@@ -202,22 +207,37 @@ def signup():
         if len(new_password) == 0:
             return redirect("/error/Password left empty")
 
+        curr_timestamp = str(datetime.timestamp(datetime.now()))
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha3_512(str(SALT + new_password).encode())
+        hashed_password = hashlib.sha3_512(str(SALT + new_password).encode()).hexdigest()
 
+        # Prepare signup request and encrypt session id to send
+        signup_req = dict({"type":"add_user", "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED})
+        signup_req_bytes = marshal.dumps(signup_req)
+
+        # Send signup request to backend server
+        s.sendall(signup_req_bytes)
+        # try:
+        #     s.sendall(signup_req_bytes)
+        # except Exception:
+        #     return redirect('/error/Could not establish connection to the server')
+        
         # Prepare data to send
-        u = dict({"type": "add_user", "username": new_username, "password": hashed_password.hexdigest()})
-
-        userInfo = marshal.dumps(u)
+        new_user_info = dict({"username": new_username, "password": hashed_password})
+        new_user_info_bytes = marshal.dumps(new_user_info)
+        new_user_info_encryptor = CIPHER.encryptor()
+        encrypted_new_user_info = new_user_info_encryptor.update(new_user_info_bytes) + new_user_info_encryptor.finalize()
+        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
+        tagger.update(encrypted_new_user_info + curr_timestamp.encode())
+        signature = tagger.finalize()
+        signup_info = dict({"encrypted_new_user_info":encrypted_new_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
+        signup_info_bytes = marshal.dumps(signup_info)
 
         # Send new user info to backend server
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((socket.gethostname(), 5003))
-            s.sendall(userInfo)
+            s.sendall(signup_info_bytes)
         except Exception:
             return redirect('/error/Could not establish connection to the server')
-            
 
         # Receive confirmation
         msg = s.recv(1024)
@@ -261,11 +281,12 @@ if __name__ == "__main__":
     setup_info_decrypted = CLIENT_PRIVATE_KEY.decrypt(setup_info_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
     setup_info = marshal.loads(setup_info_decrypted)
     CUR_SESSION_ID = setup_info['session_id']
+    print(type(CUR_SESSION_ID))
     CUR_SESSION_ID_ENCRYPTED = SERVER_PUBLIC_KEY.encrypt(CUR_SESSION_ID, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
     SYMMETRIC_KEY = setup_info['private_key']
     MAC_KEY = setup_info['private_key']
     IV = setup_info['iv']
-    CIPHER = Cipher(algorithms.AES(SYMMETRIC_KEY), modes.CBC(IV))
+    CIPHER = Cipher(algorithms.AES(SYMMETRIC_KEY), modes.CTR(IV))
     print("Set up successfully!")
 
     # Initiate Flask application
