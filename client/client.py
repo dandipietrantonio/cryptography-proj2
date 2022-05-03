@@ -101,7 +101,7 @@ def chatWith(userChattingWith):
         if not success:
             return redirect("/error/Error connecting to the server")
         
-        # Send messaage to the server
+        # Send message to the server
         reqToSendMessage = {"type": "sendMsg", "recipient": userChattingWith, "content": content}
         successfullySent = send_dict_to_server(s, reqToSendMessage)
         if not successfullySent:
@@ -152,7 +152,6 @@ def login():
         curr_timestamp = str(datetime.timestamp(datetime.now()))
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
-        print("resultis:", CUR_SESSION_ID, hashed_password)
         hashed_password_with_session_id = hashlib.sha3_512((str(CUR_SESSION_ID) + hashed_password).encode()).hexdigest()
 
         # Prepare login request and encrypt session id to send
@@ -232,7 +231,9 @@ def signup():
         signature = tagger.finalize()
         signup_info = dict({"encrypted_new_user_info":encrypted_new_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
         signup_info_bytes = marshal.dumps(signup_info)
-
+        print(curr_timestamp)
+        print(signature)
+        print(encrypted_new_user_info)
         # Send new user info to backend server
         try:
             s.sendall(signup_info_bytes)
@@ -281,10 +282,9 @@ if __name__ == "__main__":
     setup_info_decrypted = CLIENT_PRIVATE_KEY.decrypt(setup_info_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
     setup_info = marshal.loads(setup_info_decrypted)
     CUR_SESSION_ID = setup_info['session_id']
-    print(type(CUR_SESSION_ID))
     CUR_SESSION_ID_ENCRYPTED = SERVER_PUBLIC_KEY.encrypt(CUR_SESSION_ID, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
     SYMMETRIC_KEY = setup_info['private_key']
-    MAC_KEY = setup_info['private_key']
+    MAC_KEY = setup_info['MAC_key']
     IV = setup_info['iv']
     CIPHER = Cipher(algorithms.AES(SYMMETRIC_KEY), modes.CTR(IV))
     print("Set up successfully!")

@@ -11,7 +11,7 @@ import os
 import hashlib
 import cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import serialization, hashes, hmac
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # Global variables
@@ -49,7 +49,6 @@ def login(db, username, password, session_id):
     res = cursor.fetchall()
 
     if(len(res) > 0):
-        print("result is :", session_id, res[0][0])
         expectedPw = hashlib.sha3_512((str(session_id)+res[0][0]).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
             # # Try adding public key and session id
@@ -107,9 +106,27 @@ def getMessagesBetweenUsers(u1, u2):
 # Input an int in UNIX timestamp format, check if the timestamp is valid
 # Return True if valid
 def validate_timestamp(request_timestamp):
+    # Validate Timestamp
     request_time = datetime.fromtimestamp(request_timestamp)
     request_time_hours_until_now = (datetime.now() - request_time) / timedelta(hours=1)
-    return 0 < request_time_hours_until_now <= SESSION_TTL_HOURS
+    if not 0 < request_time_hours_until_now <= SESSION_TTL_HOURS:
+        return False
+    return True
+
+# Input signature, encrypted message, MAC key, request_timestamp check if the signature is valid
+# Return True if valid
+def validate_signature(signature, encrypted_msg, MAC_key, request_timestamp):
+    print(signature)
+    print(MAC_key)
+    print(encrypted_msg)
+    # Validate Signature
+    tagger = hmac.HMAC(MAC_key, hashes.SHA3_256())
+    tagger.update(encrypted_msg + request_timestamp.encode())
+    try:
+        tagger.verify(signature)
+    except:
+        return False
+    return True
 
 if __name__ == '__main__':
     # Database connection
@@ -144,7 +161,7 @@ if __name__ == '__main__':
         cs, address = s.accept()
 
         req = marshal.loads(cs.recv(2048))
-        print("Received message", req)
+        # print("Received message", req)
         reqType = req["type"]
 
         # Take action depending on the type of message receieved
@@ -160,27 +177,35 @@ if __name__ == '__main__':
 
             # Receive signup information from client
             signup_info= marshal.loads(cs.recv(2048))
+            request_timestamp = signup_info['curr_timestamp']
+            signature = signup_info['signature']
+            encrypted_new_user_info = signup_info['encrypted_new_user_info']
+
             # Check timestamp
-            request_timestamp = int(float(signup_info['curr_timestamp']))
-            if not validate_timestamp(request_timestamp):
+            if not validate_timestamp(int(float(request_timestamp))):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
+                continue
             
-            # TODO: Check signature
-            # TODO: Pack signature checking into a function that can be called by all functionalities(signup, login, chat)
+            # Check signature
+            if not validate_signature(signature, encrypted_new_user_info, client_keys['MAC_key'], request_timestamp):
+                cs.send(bytes("Signature Mismatch", encoding="utf-8"))
+                continue
 
             # Decrypt new user information
-            encrypted_new_user_info = signup_info['encrypted_new_user_info']
             client_decryptor = client_keys['cipher'].decryptor()
             decrypted_new_user_info = client_decryptor.update(encrypted_new_user_info) + client_decryptor.finalize()
             user_info = marshal.loads(decrypted_new_user_info)
             username = user_info['username']
             password = user_info['password']
-            print("Signing Up")
-            try:
-                add_user_to_db(db, username, password)
-                cs.send(bytes("SUCCESS", encoding="utf-8"))
-            except Exception as e:
-                cs.send(bytes("Username already taken", encoding="utf-8"))
+            add_user_to_db(db, username, password)
+            cs.send(bytes("SUCCESS", encoding="utf-8"))
+            # # Sign up
+            # try:
+            #     add_user_to_db(db, username, password)
+            #     cs.send(bytes("SUCCESS", encoding="utf-8"))
+            # except Exception as e:
+            #     cs.send(bytes("Username already taken", encoding="utf-8"))
+
         elif req["type"]=="login":
             # Retrieve sessionid and find corresponding keys
             # TODO: Validate if session id hasn't expire
@@ -193,24 +218,29 @@ if __name__ == '__main__':
 
             # Receive Login Info from client
             login_info= marshal.loads(cs.recv(2048))
+            encrypted_user_info = login_info['encrypted_user_info']
+            request_timestamp = login_info['curr_timestamp']
+            signature = login_info['signature']
 
             # Check timestamp
-            request_timestamp = int(float(signup_info['curr_timestamp']))
-            if not validate_timestamp(request_timestamp):
+            if not validate_timestamp(int(float(request_timestamp))):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
+                continue
 
-            # TODO: Check signature
-            # TODO: Pack signature checking into a function that can be called by all functionalities(signup, login, chat)
+            # Check signature
+            if not validate_signature(signature, encrypted_user_info, client_keys['MAC_key'], request_timestamp):
+                cs.send(bytes("Signature Mismatch", encoding="utf-8"))
+                continue
 
             # Decrypt user information
-            encrypted_user_info = login_info['encrypted_user_info']
             client_decryptor = client_keys['cipher'].decryptor()
             decrypted_user_info = client_decryptor.update(encrypted_user_info) + client_decryptor.finalize()
             user_info = marshal.loads(decrypted_user_info)
             username = user_info['username']
             password = user_info['password']
+            
+            # Login
             try:
-                
                 if (login(db, username, password, client_sessionid)):
                     cs.send(bytes("SUCCESS", encoding="utf-8"))
                 else:
@@ -218,6 +248,7 @@ if __name__ == '__main__':
             except:
 
                 cs.send(bytes("Error", encoding="utf-8"))
+
         elif reqType=="getUsers":
             print("Sending users...")
             cs.send(str(getUsers()).encode())
@@ -235,6 +266,7 @@ if __name__ == '__main__':
                     cs.send(bytes("Failure sending message", encoding="utf-8"))
             else:
                 cs.send(bytes("Failure sending message", encoding="utf-8"))
+
         elif reqType=="getMessages":
             sessionid = req["sessionid"]
             if sessionid in sessionIdToUsername.keys():
@@ -247,6 +279,7 @@ if __name__ == '__main__':
                     cs.send(bytes("Failure getting messages", encoding="utf-8"))
             else:
                 cs.send(bytes("Failure getting messages", encoding="utf-8"))
+
         elif reqType=="setup":
             # Receive client public key
             client_public_pem = req['client_public_pem']
