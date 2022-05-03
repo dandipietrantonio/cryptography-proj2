@@ -71,18 +71,29 @@ def login():
         hashed_password_with_session_id = hashlib.sha3_512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
 
         # Prepare and encrypt data to send
-        curr_timestamp = str(datetime.datetime.timestamp(datetime.now())*1000)
-        user_info = dict({"username": username, "password": hashed_password_with_session_id, "sessionid": CUR_SESSION_ID})
-        user_info_bytes = marshal.dumps(user_info)
-        encrypted_user_info = SERVER_PUBLIC_KEY.encrypt(user_info_bytes, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
-        tagger.update(curr_timestamp.encode()+encrypted_user_info)
-        signature = tagger.finalize()
-        login_req = dict({"type":"login", "encrypted_user_info":encrypted_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
+        curr_timestamp = str(datetime.datetime.timestamp(datetime.now()))
+        login_req = dict({"type":"login", "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED})
+        login_req_bytes = marshal.dumps(login_req)
 
-        # Send user info to backend server
+        # Send login request to backend server
         try:
-            s.sendall(marshal.dumps(login_req))
+            s.sendall(login_req_bytes)
+        except Exception:
+            return redirect('/error/Could not establish connection to the server')
+
+        # Prepare user info data to send
+        user_info = dict({"username": username, "password": hashed_password_with_session_id})
+        user_info_bytes = marshal.dumps(user_info)
+        user_info_encryptor = CIPHER.encryptor()
+        encrypted_user_info = user_info_encryptor.update(user_info_bytes) + user_info_encryptor.finalize()
+        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
+        tagger.update(encrypted_user_info + curr_timestamp.encode())
+        signature = tagger.finalize()
+        login_info = dict({"encrypted_user_info":encrypted_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
+
+        # Send login information to backend server
+        try:
+            s.sendall(marshal.dumps(login_info))
         except Exception:
             return redirect('/error/Could not establish connection to the server')
 
@@ -165,12 +176,12 @@ if __name__ == "__main__":
     setup_info_decrypted = CLIENT_PRIVATE_KEY.decrypt(setup_info_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
     setup_info = marshal.loads(setup_info_decrypted)
     CUR_SESSION_ID = setup_info['session_id']
+    CUR_SESSION_ID_ENCRYPTED = SERVER_PUBLIC_KEY.encrypt(CUR_SESSION_ID, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
     SYMMETRIC_KEY = setup_info['private_key']
     MAC_KEY = setup_info['private_key']
     IV = setup_info['iv']
     CIPHER = Cipher(algorithms.AES(SYMMETRIC_KEY), modes.CBC(IV))
+    print("Set up successfully!")
 
-
-    # # Initiate Flask application
-    # print("Set up successfully!")
-    # app.run()
+    # Initiate Flask application
+    app.run()

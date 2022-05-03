@@ -1,3 +1,4 @@
+from multiprocessing import set_forkserver_preload
 import socket
 import json
 import marshal
@@ -49,17 +50,17 @@ def login(db, username, password, session_id):
     res = cursor.fetchall()
 
     if(len(res) > 0):
-        expectedPw = hashlib.sha3_512((str(session_id) + str(res[0][0])).encode()).hexdigest()
+        expectedPw = hashlib.sha3_512(str(session_id + str(res[0][0])).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
-            # Try adding public key and session id
-            try:
-                cursor = db.cursor()
-                cursor.execute(f"UPDATE users SET public_key=%sWHERE username=%s", (str(pubkey),str(username)))
-                db.commit()
-            except Exception as e:
-                print("Failed to update the public key for real")
-                print(e)
-                return False
+            # # Try adding public key and session id
+            # try:
+            #     cursor = db.cursor()
+            #     cursor.execute(f"UPDATE users SET public_key=%sWHERE username=%s", (str(pubkey),str(username)))
+            #     db.commit()
+            # except Exception as e:
+            #     print("Failed to update the public key for real")
+            #     print(e)
+            #     return False
 
             # Try adding session id
             try:
@@ -117,21 +118,38 @@ if __name__ == '__main__':
             except Exception as e:
                 cs.send(bytes("Username already taken", encoding="utf-8"))
         elif req["type"]=="login":
-            # # First, send a random token back to the client so they can use it to re-hash their password and avoid data replay
-            # sessionid = hashlib.sha512(str(cryptSecureRandomNum()).encode()).hexdigest()
-            # cs.send(bytes(sessionid, encoding='utf-8'))
-            # newReq = json.loads(cs.recv(2048).decode("utf-8"))
+            # Retrieve sessionid and find corresponding keys
+            # TODO: Validate if session id hasn't expire
+            client_sessionid_encrypted = req["sessionid_encrypted"]
+            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+            if client_sessionid not in sessionid_keys.keys():
+                # (The client hasn't have the capability to process such error, TODO)
+                cs.send(bytes("Session ID error", encoding="utf-8"))
+            client_keys = sessionid_keys[client_sessionid]
+            
 
-            # Check the request timestamp 
-            request_timestamp = req['curr_timestamp']
+            # Receive Login Info from client
+            login_info= marshal.loads(cs.recv(2048))
+
+            # Check timestamp
+            request_timestamp = login_info['curr_timestamp']
             request_time = datetime.fromtimestamp(request_timestamp)
             request_time_hours_until_now = (datetime.datetime.now() - request_time) / datetime
             if request_time_hours_until_now < 0 or request_time_hours_until_now > SESSION_TTL_HOURS:
                 cs.send(bytes("Please restart application", encoding="utf-8"))
+
+            # TODO: Check signature
+
+            # Decrypt user information
+            encrypted_user_info = login_info['encrypted_user_info']
+            client_decryptor = client_keys['cipher'].decryptor()
+            decrypted_user_info = client_decryptor.update(encrypted_user_info) + client_decryptor.finalize()
+            user_info = marshal.loads(decrypted_user_info)
+            username = user_info['user_name']
+            password = user_info['password']
             try:
-                encrypted_user_info = req['encrypted_user_info']
-                signature = req["signature"]
-                if (login(db, encrypted_user_info, signature)):
+                
+                if (login(db, username, password, client_sessionid)):
                     cs.send(bytes("SUCCESS", encoding="utf-8"))
                 else:
                     cs.send(bytes("Failure logging in", encoding="utf-8"))
@@ -146,6 +164,7 @@ if __name__ == '__main__':
             iv = os.urandom(16)
             private_key = os.urandom(32)
             MAC_key = os.urandom(32)
+            client_cipher = Cipher(algorithms.AES(private_key), modes.CBC(iv))
             # Send server public key, session_id, private keys to client
             sessionid = os.urandom(32)
             setup_info = marshal.dumps(dict({"session_id": sessionid, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}))
@@ -153,5 +172,5 @@ if __name__ == '__main__':
             setup_reply = {'server_public_key':SERVER_PUBLIC_PEM, "setup_info_encrypted":setup_info_encrypted}
             cs.sendall(marshal.dumps(setup_reply))
             # Record client public key, private keys and iv for sessionid
-            sessionid_keys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}
+            sessionid_keys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv, "cipher":client_cipher}
             
