@@ -19,13 +19,6 @@ app = Flask(__name__)
 def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
 
-"""
-Generates a MAC for msg, using symmetric key k. The MAC is generated as the 
-"""
-def generate_mac_for_msg(msg, k):
-    timestamp = datetime.now()
-
-
 @app.route("/")
 def index():
     return render_template('index.html')

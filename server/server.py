@@ -6,6 +6,8 @@ from random import SystemRandom
 import os
 import hashlib
 
+sessionIdToPrivKey = dict()
+
 def cryptSecureRandomNum():
     return SystemRandom().random()
 
@@ -26,10 +28,9 @@ def login(db, username, password, pubkey, session_id):
     cursor.execute(f"SELECT password FROM users WHERE username=%s", [str(username)])
     res = cursor.fetchall()
 
-    # Check if the password is valid
     if(len(res) > 0):
-        expectedPw = hashlib.sha512((str(session_id) + str(res[0][0])).encode()).hexdigest()
-        if expectedPw == password:
+        expectedPw = hashlib.sha3_512((str(session_id) + str(res[0][0])).encode()).hexdigest()
+        if expectedPw == password: # Check if the password is valid
             # Try adding public key and session id
             try:
                 cursor = db.cursor()
@@ -77,6 +78,7 @@ if __name__ == '__main__':
         cs, address = s.accept()
         req = json.loads(cs.recv(2048).decode("utf-8"))
 
+        # Take action depending on the type of message receieved
         if req["type"]=="add_user":
             try:
                 add_user_to_db(db, req['username'], req['password'])
@@ -84,9 +86,11 @@ if __name__ == '__main__':
             except Exception as e:
                 cs.send(bytes("Username already taken", encoding="utf-8"))
         elif req["type"]=="login":
-            # First, send a random token back to the client so they can use it to re-hash their password and avoid data replay
-            sessionid = hashlib.sha512(str(cryptSecureRandomNum()).encode()).hexdigest()
+            # Send a random token back to the client so they can use it to re-hash their password and avoid data replay
+            sessionid = hashlib.sha3_512(str(cryptSecureRandomNum()).encode()).hexdigest()
             cs.send(bytes(sessionid, encoding='utf-8'))
+
+            # Get user's login info with sessionID-hashed password
             newReq = json.loads(cs.recv(2048).decode("utf-8"))
             if (login(db, newReq['username'], newReq['password'], newReq['public_key'], sessionid)):
                 cs.send(bytes("SUCCESS", encoding="utf-8"))
