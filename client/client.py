@@ -6,7 +6,8 @@ import hashlib
 import marshal
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import serialization, hashes, hmac
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 # Misc globals
@@ -24,6 +25,7 @@ SERVER_PUBLIC_KEY = None
 SYMMETRIC_KEY = None
 MAC_KEY = None
 IV = None
+CIPHER = None
 
 app = Flask(__name__)
 
@@ -47,13 +49,13 @@ def login():
         s.connect((socket.gethostname(), 5003))
 
         # Get sessionid from server
-        reqForSessionID = json.dumps(dict({"type": "login"}))
-        try:
-            s.sendall(bytes(reqForSessionID, encoding="utf-8"))
-        except Exception:
-            return redirect('/error/Could not establish connection to the server')
-        CUR_SESSION_ID = s.recv(2048).decode("utf-8")
-        print("Session ID: ", CUR_SESSION_ID)
+        # reqForSessionID = json.dumps(dict({"type": "login"}))
+        # try:
+        #     s.sendall(bytes(reqForSessionID, encoding="utf-8"))
+        # except Exception:
+        #     return redirect('/error/Could not establish connection to the server')
+        # CUR_SESSION_ID = s.recv(2048).decode("utf-8")
+        # print("Session ID: ", CUR_SESSION_ID)
 
         # Get info from form
         username = request.form['username']
@@ -67,15 +69,20 @@ def login():
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha512(str(SALT + password).encode()).hexdigest()
         hashed_password_with_session_id = hashlib.sha512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
-        public_key, PRIV_KEY = get_key_pair()
 
-        # Prepare data to send
-        u = dict({"username": username, "password": hashed_password_with_session_id, "public_key":public_key})
-        userInfo = json.dumps(u)
+        # Prepare and encrypt data to send
+        curr_timestamp = str(datetime.datetime.timestamp(datetime.now())*1000)
+        user_info = dict({"username": username, "password": hashed_password_with_session_id, "sessionid": CUR_SESSION_ID})
+        user_info_bytes = marshal.dumps(user_info)
+        encrypted_user_info = SERVER_PUBLIC_KEY.encrypt(user_info_bytes, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
+        tagger.update(curr_timestamp.encode()+encrypted_user_info)
+        signature = tagger.finalize()
+        login_req = dict({"type":"login", "encrypted_user_info":encrypted_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
 
         # Send user info to backend server
         try:
-            s.sendall(bytes(userInfo, encoding="utf-8"))
+            s.sendall(marshal.dumps(login_req))
         except Exception:
             return redirect('/error/Could not establish connection to the server')
 
@@ -105,13 +112,13 @@ def signup():
 
         # Prepare data to send
         u = dict({"type": "add_user", "username": new_username, "password": hashed_password.hexdigest()})
-        userInfo = json.dumps(u)
+        userInfo = marshal.dumps(u)
 
         # Send new user info to backend server
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((socket.gethostname(), 5003))
-            s.sendall(bytes(userInfo, encoding="utf-8"))
+            s.sendall(userInfo)
         except Exception:
             return redirect('/error/Could not establish connection to the server')
             
@@ -139,21 +146,31 @@ def test():
 
 if __name__ == "__main__":
     print("Setting up")
+    # Generate client public and private key
     CLIENT_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.public_key()
     CLIENT_PUBLIC_PEM = CLIENT_PUBLIC_KEY.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    
+    # Send setup request along with client public key to server
     setup_req = marshal.dumps(dict({'type':'setup', 'client_public_pem': CLIENT_PUBLIC_PEM}))
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((socket.gethostname(), 5003))
     s.sendall(setup_req)
-    SERVER_PUBLIC_PEM = s.recv(2048)
+    
+    # Receive server public key, private keys and session id
+    setup_reply = marshal.loads(s.recv(2048))
+    setup_info_encrypted = setup_reply['setup_info_encrypted']
+    SERVER_PUBLIC_PEM = setup_reply['server_public_key']
     SERVER_PUBLIC_KEY = serialization.load_pem_public_key(SERVER_PUBLIC_PEM)
-    encrypted_msg = s.recv(2048)
-    decrypted_msg = CLIENT_PRIVATE_KEY.decrypt(encrypted_msg, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-    setup_info = marshal.loads(decrypted_msg)
+    setup_info_decrypted = CLIENT_PRIVATE_KEY.decrypt(setup_info_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+    setup_info = marshal.loads(setup_info_decrypted)
     CUR_SESSION_ID = setup_info['session_id']
     SYMMETRIC_KEY = setup_info['private_key']
     MAC_KEY = setup_info['private_key']
     IV = setup_info['iv']
-    print("Set up successfully!")
-    app.run()
+    CIPHER = Cipher(algorithms.AES(SYMMETRIC_KEY), modes.CBC(IV))
+
+
+    # # Initiate Flask application
+    # print("Set up successfully!")
+    # app.run()
