@@ -1,7 +1,6 @@
 import socket
 import json
 import marshal
-# import mysql.connector
 import pymysql
 from setuptools import setup
 from dotenv import load_dotenv
@@ -24,7 +23,7 @@ SESSION_TTL_HOURS = 6
 # TODO: ADD TTL
 sessionid_keys = dict()
 
-sessionIdToPrivKey = dict()
+sessionIdToUsername = dict()
 
 def cryptSecureRandomNum():
     return SystemRandom().random()
@@ -71,11 +70,37 @@ def login(db, username, password, session_id):
                 print(e)
                 return False
 
+            sessionIdToUsername[sessionid] = username
             return True
         else:
             print("Failed to login the user")
     return False
 
+def getUsers():
+    print("Getting users")
+    cursor = db.cursor()
+    cursor.execute(f"SELECT username FROM users")
+    res = cursor.fetchall()
+    return [r[0] for r in res]
+
+def addMsgToDb(author, recipient, content):
+    try:
+        cursor = db.cursor()
+        cursor.execute(f"INSERT INTO messages(author, recipient, content) VALUES (%s, %s, %s)", (str(author), str(recipient), str(content)))
+        db.commit()
+        print(cursor.rowcount, "record inserted.")
+        return True
+    except:
+        return False
+
+def getMessagesBetweenUsers(u1, u2):
+    print(f"Getting messages between {u1} and {u2}")
+    cursor = db.cursor()
+    cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s)", (str(u1), str(u2), str(u2), str(u1)))
+    res = cursor.fetchall()
+
+    # The client expects tuples of messages, (content, timestamp, author)
+    return [(r[4], r[3].strftime("%m/%d/%Y, %H:%M:%S"), r[1]) for r in res]
 
 if __name__ == '__main__':
     # Database connection
@@ -101,27 +126,27 @@ if __name__ == '__main__':
 
     # Socket connection
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((socket.gethostname(), 5003))
     s.listen(5)
 
     # Wait for incoming requests
     while True:
         cs, address = s.accept()
+
         req = marshal.loads(cs.recv(2048))
+        print("Received message")
+        print(req)
+        reqType = req["type"]
 
         # Take action depending on the type of message receieved
-        if req["type"]=="add_user":
+        if reqType=="add_user":
             try:
                 add_user_to_db(db, req['username'], req['password'])
                 cs.send(bytes("SUCCESS", encoding="utf-8"))
             except Exception as e:
                 cs.send(bytes("Username already taken", encoding="utf-8"))
-        elif req["type"]=="login":
-            # # First, send a random token back to the client so they can use it to re-hash their password and avoid data replay
-            # sessionid = hashlib.sha512(str(cryptSecureRandomNum()).encode()).hexdigest()
-            # cs.send(bytes(sessionid, encoding='utf-8'))
-            # newReq = json.loads(cs.recv(2048).decode("utf-8"))
-
+        elif reqType=="login":
             # Check the request timestamp 
             request_timestamp = req['curr_timestamp']
             request_time = datetime.fromtimestamp(request_timestamp)
@@ -138,8 +163,36 @@ if __name__ == '__main__':
             except:
 
                 cs.send(bytes("Failure logging in", encoding="utf-8"))
-
-        elif req["type"]=="setup":
+        elif reqType=="getUsers":
+            print("Sending users...")
+            cs.send(str(getUsers()).encode())
+            print("Users sent!")
+        elif reqType=="sendMsg":
+            sessionid = req["sessionid"]
+            if sessionid in sessionIdToUsername.keys():
+                author = sessionIdToUsername[sessionid]
+                recipient = req["recipient"]
+                content = req["content"]
+                success = addMsgToDb(author, recipient, content)
+                if success:
+                    cs.send(bytes("SUCCESS", encoding="utf-8"))
+                else:
+                    cs.send(bytes("Failure sending message", encoding="utf-8"))
+            else:
+                cs.send(bytes("Failure sending message", encoding="utf-8"))
+        elif reqType=="getMessages":
+            sessionid = req["sessionid"]
+            if sessionid in sessionIdToUsername.keys():
+                author = sessionIdToUsername[sessionid]
+                recipient = req["recipient"]
+                messages = getMessagesBetweenUsers(author, recipient)
+                if messages:
+                    cs.send(str(messages).encode())
+                else:
+                    cs.send(bytes("Failure getting messages", encoding="utf-8"))
+            else:
+                cs.send(bytes("Failure getting messages", encoding="utf-8"))
+        elif reqType=="setup":
             # Receive client public key
             client_public_pem = req['client_public_pem']
             client_public_key = serialization.load_pem_public_key(client_public_pem)
@@ -154,4 +207,3 @@ if __name__ == '__main__':
             cs.sendall(marshal.dumps(setup_reply))
             # Record client public key, private keys and iv for sessionid
             sessionid_keys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}
-            
