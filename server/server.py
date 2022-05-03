@@ -24,6 +24,8 @@ SESSION_TTL_HOURS = 6
 # TODO: ADD TTL
 sessionid_keys = dict()
 
+sessionIdToPrivKey = dict()
+
 def cryptSecureRandomNum():
     return SystemRandom().random()
 
@@ -46,10 +48,9 @@ def login(db, username, password, session_id):
     cursor.execute(f"SELECT password FROM users WHERE username=%s", [str(username)])
     res = cursor.fetchall()
 
-    # Check if the password is valid
     if(len(res) > 0):
-        expectedPw = hashlib.sha512((str(session_id) + str(res[0][0])).encode()).hexdigest()
-        if expectedPw == password:
+        expectedPw = hashlib.sha3_512((str(session_id) + str(res[0][0])).encode()).hexdigest()
+        if expectedPw == password: # Check if the password is valid
             # Try adding public key and session id
             try:
                 cursor = db.cursor()
@@ -108,6 +109,7 @@ if __name__ == '__main__':
         cs, address = s.accept()
         req = marshal.loads(cs.recv(2048))
 
+        # Take action depending on the type of message receieved
         if req["type"]=="add_user":
             try:
                 add_user_to_db(db, req['username'], req['password'])
@@ -134,6 +136,7 @@ if __name__ == '__main__':
                 else:
                     cs.send(bytes("Failure logging in", encoding="utf-8"))
             except:
+
                 cs.send(bytes("Failure logging in", encoding="utf-8"))
 
         elif req["type"]=="setup":

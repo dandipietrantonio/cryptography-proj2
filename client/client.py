@@ -67,8 +67,8 @@ def login():
             return redirect("/error/Password field empty")
 
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha512(str(SALT + password).encode()).hexdigest()
-        hashed_password_with_session_id = hashlib.sha512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
+        hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
+        hashed_password_with_session_id = hashlib.sha3_512(str(CUR_SESSION_ID + hashed_password).encode()).hexdigest()
 
         # Prepare and encrypt data to send
         curr_timestamp = str(datetime.datetime.timestamp(datetime.now())*1000)
@@ -108,7 +108,7 @@ def signup():
             return redirect("/error/Password left empty")
 
         # Hash password and generate public and private keys
-        hashed_password = hashlib.sha512(str(SALT + new_password).encode())
+        hashed_password = hashlib.sha3_512(str(SALT + new_password).encode())
 
         # Prepare data to send
         u = dict({"type": "add_user", "username": new_username, "password": hashed_password.hexdigest()})
