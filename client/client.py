@@ -3,7 +3,11 @@ from flask_sqlalchemy import SQLAlchemy
 import socket
 import json
 import hashlib
+import marshal
 from datetime import datetime
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
+
 
 # Misc globals
 PUB_KEY_LENGTH = 180 # TODO we need to optimize this
@@ -12,7 +16,14 @@ SALT='DcU5opPnT#vXX*S2gjtoQLo@g'
 # Session variables
 CUR_USER = None # current logged in user
 CUR_SESSION_ID = None # current session id
-PRIV_KEY = None
+CLIENT_PUBLIC_KEY = None
+CLIENT_PUBLIC_PEM = None
+CLIENT_PRIVATE_KEY = None
+SERVER_PUBLIC_PEM = None
+SERVER_PUBLIC_KEY = None
+SYMMETRIC_KEY = None
+MAC_KEY = None
+IV = None
 
 app = Flask(__name__)
 
@@ -121,3 +132,28 @@ def new_user_success():
 @app.route("/error/<msg>")
 def new_user_fail(msg):
     return f"<h1>Error</h1><p>There was an error: {msg}.<br/> Click <a href='/'>here</a> to go back to the home page.</p>"
+
+@app.route("/test")
+def test():
+    return CLIENT_PUBLIC_PEM.decode('utf-8')
+
+if __name__ == "__main__":
+    print("Setting up")
+    CLIENT_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    CLIENT_PUBLIC_KEY = CLIENT_PRIVATE_KEY.public_key()
+    CLIENT_PUBLIC_PEM = CLIENT_PUBLIC_KEY.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    setup_req = marshal.dumps(dict({'type':'setup', 'client_public_pem': CLIENT_PUBLIC_PEM}))
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((socket.gethostname(), 5003))
+    s.sendall(setup_req)
+    SERVER_PUBLIC_PEM = s.recv(2048)
+    SERVER_PUBLIC_KEY = serialization.load_pem_public_key(SERVER_PUBLIC_PEM)
+    encrypted_msg = s.recv(2048)
+    decrypted_msg = CLIENT_PRIVATE_KEY.decrypt(encrypted_msg, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+    setup_info = marshal.loads(decrypted_msg)
+    CUR_SESSION_ID = setup_info['session_id']
+    SYMMETRIC_KEY = setup_info['private_key']
+    MAC_KEY = setup_info['private_key']
+    IV = setup_info['iv']
+    print("Set up successfully!")
+    app.run()
