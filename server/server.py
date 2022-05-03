@@ -12,13 +12,16 @@ import hashlib
 import cryptography
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # Global variables
 SERVER_PRIVATE_KEY = None
 SERVER_PUBLIC_KEY = None
 SERVER_PUBLIC_PEM = None
+SESSION_TTL_HOURS = 6
 
 # Cache
+# TODO: ADD TTL
 sessionid_keys = dict()
 
 def cryptSecureRandomNum():
@@ -38,8 +41,7 @@ def add_user_to_db(db, username, password):
 
     print(cursor.rowcount, "record inserted.")
 
-def login(db, username, password, pubkey, session_id):
-    print(f"Logging in {username} {password} {pubkey}")
+def login(db, username, password, session_id):
     cursor = db.cursor()
     cursor.execute(f"SELECT password FROM users WHERE username=%s", [str(username)])
     res = cursor.fetchall()
@@ -113,29 +115,40 @@ if __name__ == '__main__':
             except Exception as e:
                 cs.send(bytes("Username already taken", encoding="utf-8"))
         elif req["type"]=="login":
-            # First, send a random token back to the client so they can use it to re-hash their password and avoid data replay
-            sessionid = hashlib.sha512(str(cryptSecureRandomNum()).encode()).hexdigest()
-            cs.send(bytes(sessionid, encoding='utf-8'))
-            newReq = json.loads(cs.recv(2048).decode("utf-8"))
-            if (login(db, newReq['username'], newReq['password'], newReq['public_key'], sessionid)):
-                cs.send(bytes("SUCCESS", encoding="utf-8"))
-            else:
+            # # First, send a random token back to the client so they can use it to re-hash their password and avoid data replay
+            # sessionid = hashlib.sha512(str(cryptSecureRandomNum()).encode()).hexdigest()
+            # cs.send(bytes(sessionid, encoding='utf-8'))
+            # newReq = json.loads(cs.recv(2048).decode("utf-8"))
+
+            # Check the request timestamp 
+            request_timestamp = req['curr_timestamp']
+            request_time = datetime.fromtimestamp(request_timestamp)
+            request_time_hours_until_now = (datetime.datetime.now() - request_time) / datetime
+            if request_time_hours_until_now < 0 or request_time_hours_until_now > SESSION_TTL_HOURS:
+                cs.send(bytes("Please restart application", encoding="utf-8"))
+            try:
+                encrypted_user_info = req['encrypted_user_info']
+                signature = req["signature"]
+                if (login(db, encrypted_user_info, signature)):
+                    cs.send(bytes("SUCCESS", encoding="utf-8"))
+                else:
+                    cs.send(bytes("Failure logging in", encoding="utf-8"))
+            except:
                 cs.send(bytes("Failure logging in", encoding="utf-8"))
+
         elif req["type"]=="setup":
             # Receive client public key
             client_public_pem = req['client_public_pem']
             client_public_key = serialization.load_pem_public_key(client_public_pem)
-            # Send public key to client
-            cs.sendall(SERVER_PUBLIC_PEM)
-            # Generate initialization vector and private key for symmetric encryption and MAC key
-            iv = os.urandom(12)
+            iv = os.urandom(16)
             private_key = os.urandom(32)
             MAC_key = os.urandom(32)
-            # Send session_id, private keys to client
+            # Send server public key, session_id, private keys to client
             sessionid = os.urandom(32)
             setup_info = marshal.dumps(dict({"session_id": sessionid, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}))
             setup_info_encrypted = client_public_key.encrypt(setup_info, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-            cs.sendall(setup_info_encrypted)
+            setup_reply = {'server_public_key':SERVER_PUBLIC_PEM, "setup_info_encrypted":setup_info_encrypted}
+            cs.sendall(marshal.dumps(setup_reply))
             # Record client public key, private keys and iv for sessionid
             sessionid_keys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}
             
