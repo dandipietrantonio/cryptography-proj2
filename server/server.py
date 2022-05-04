@@ -34,9 +34,6 @@ def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
 
 def add_user_to_db(db, username, password):
-    print("username: ", username)
-    print("password: ", password)
-
     cursor = db.cursor()
 
     cursor.execute(f"INSERT INTO users(username, password) VALUES (%s, %s)", (str(username), str(password)))
@@ -52,7 +49,7 @@ def login(db, username, password, session_id):
     if(len(res) > 0):
         expectedPw = hashlib.sha3_512((str(session_id)+res[0][0]).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
-            sessionIdToUsername[sessionid] = username
+            sessionIdToUsername[session_id] = username
             usersOnline.add(username)
             return True
         else:
@@ -180,6 +177,7 @@ if __name__ == '__main__':
                 # (The client hasn't have the capability to process such error, TODO)
                 res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Session ID error"})
                 cs.send(res)
+                continue
             client_keys = sessionid_keys[client_sessionid]
 
             # Decrypt parameters
@@ -232,16 +230,15 @@ if __name__ == '__main__':
                     res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Error"})
                     cs.send(res)
 
-            elif reqType=="getUsers": # TODO: encrypt
+            elif reqType=="getUsers":
                 users = list(usersOnline)
-                print("Users online: ", users)
                 try:
                     users.remove(sessionIdToUsername[client_sessionid])
                 except:
                     print("User doesn't currently have a session...")
                 res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "users": str(users)})
                 cs.send(res)
-            elif reqType=="sendMsg": # TODO: encrypt
+            elif reqType=="sendMsg":
                 if client_sessionid in sessionIdToUsername.keys():
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
@@ -256,8 +253,7 @@ if __name__ == '__main__':
                 else:
                     res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure sending message"})
                     cs.send(res)
-
-            elif reqType=="getMessages": # TODO: encrypt
+            elif reqType=="getMessages":
                 if client_sessionid in sessionIdToUsername.keys():
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
@@ -267,7 +263,10 @@ if __name__ == '__main__':
                 else:
                     res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure getting messages"})
                     cs.send(res)
-
+            elif reqType=="logout":
+                username = sessionIdToUsername[client_sessionid]
+                del sessionIdToUsername[client_sessionid]
+                usersOnline.remove(username)
         else: # if a request doesn't have a session id, we know it's a request for setup       
             # Receive client public key
             client_public_pem = req['client_public_pem']
@@ -278,6 +277,7 @@ if __name__ == '__main__':
             client_cipher = Cipher(algorithms.AES(private_key), modes.CTR(iv))
             # Send server public key, session_id, private keys to client
             sessionid = os.urandom(32)
+            print("Telling them their session ID is: ", sessionid)
             setup_info = marshal.dumps(dict({"session_id": sessionid, "private_key": private_key, "MAC_key": MAC_key, "iv":iv}))
             setup_info_encrypted = client_public_key.encrypt(setup_info, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
             setup_reply = {'server_public_key':SERVER_PUBLIC_PEM, "setup_info_encrypted":setup_info_encrypted}

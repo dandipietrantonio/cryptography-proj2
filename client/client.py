@@ -77,6 +77,7 @@ def generate_request(parameters):
     tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
     tagger.update(encrypted_parameters + curr_timestamp.encode())
     signature = tagger.finalize()
+    print("I believe my encrypted session ID is: ", CUR_SESSION_ID_ENCRYPTED)
     request_dict = dict({"sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED, "encrypted_parameters": encrypted_parameters, "signature":signature})
     print(request_dict)
     return marshal.dumps(request_dict)
@@ -227,7 +228,7 @@ def login():
         hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
         hashed_password_with_session_id = hashlib.sha3_512((str(CUR_SESSION_ID) + hashed_password).encode()).hexdigest()
 
-        # Prepare login request and encrypt session id to send
+        # Prepare login request
         login_parameters = dict({"reqType": "login", "username":username, "password": hashed_password_with_session_id})
         login_request = generate_request(login_parameters)
 
@@ -252,6 +253,15 @@ def login():
 
 @app.route("/logout")
 def logout():
+    # Prepare logout request
+    logout_parameters = dict({"reqType": "logout"})
+    logout_request = generate_request(logout_parameters)
+
+    # Send logout request to backend server
+    try:
+        s.sendall(logout_request)
+    except Exception:
+        return redirect('/error/Could not establish connection to the server')
     session.clear()
     return redirect("/")
 
@@ -340,4 +350,4 @@ if __name__ == "__main__":
     port = DEFAULT_PORT
     if len(sys.argv) > 1:
         port = sys.argv[1]
-    app.run(host="localhost", port=port)
+    app.run(host="localhost", port=port, debug=False)
