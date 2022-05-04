@@ -71,6 +71,29 @@ def send_dict_to_server(s, data):
     except Exception:
         return False
 
+"""
+Input a string of request type ("login"/"signup"/"chat"/...) 
+and a dict of function parameters ({"username":..., "password":...}),
+Output initial request to server
+The output request contains:
+type                    Request type ("login", "signup")
+sessionid_encrypted     Client session id assymetrically encrypted with server public key
+encrypted_parameters    Request Parameters (dict) symmetrically encrypted with private key
+signature               Signature generated with MAC key, encrypted_parameters and timestamp
+curr_timestamp          UNIX Timestamp-like timestamp at request
+"""
+def generate_request(request_type, parameters):
+    curr_timestamp = str(datetime.timestamp(datetime.now()))
+    parameters_bytes = marshal.dumps(parameters)
+    parameters_encryptor = CIPHER.encryptor()
+    encrypted_parameters = parameters_encryptor.update(parameters_bytes) + parameters_encryptor.finalize()
+    tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
+    tagger.update(encrypted_parameters + curr_timestamp.encode())
+    signature = tagger.finalize()
+    request_dict = dict({"type": request_type, "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED, "encrypted_parameters": encrypted_parameters, "signature":signature, "curr_timestamp": curr_timestamp})
+    print(request_dict)
+    return marshal.dumps(request_dict)
+
 @app.route("/")
 def index():
     return render_template('index.html')
@@ -149,38 +172,22 @@ def login():
         if len(password) == 0:
             return redirect("/error/Password field empty")
 
-        curr_timestamp = str(datetime.timestamp(datetime.now()))
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha3_512(str(SALT + password).encode()).hexdigest()
         hashed_password_with_session_id = hashlib.sha3_512((str(CUR_SESSION_ID) + hashed_password).encode()).hexdigest()
 
         # Prepare login request and encrypt session id to send
-        login_req = dict({"type":"login", "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED})
-        login_req_bytes = marshal.dumps(login_req)
+        login_parameters = dict({"username":username, "password": hashed_password_with_session_id})
+        login_request = generate_request("login", login_parameters)
 
         # Send login request to backend server
         try:
-            s.sendall(login_req_bytes)
-        except Exception:
-            return redirect('/error/Could not establish connection to the server')
-
-        # Prepare user info data to send
-        user_info = dict({"username": username, "password": hashed_password_with_session_id})
-        user_info_bytes = marshal.dumps(user_info)
-        user_info_encryptor = CIPHER.encryptor()
-        encrypted_user_info = user_info_encryptor.update(user_info_bytes) + user_info_encryptor.finalize()
-        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
-        tagger.update(encrypted_user_info + curr_timestamp.encode())
-        signature = tagger.finalize()
-        login_info = dict({"encrypted_user_info":encrypted_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
-
-        # Send login information to backend server
-        try:
-            s.sendall(marshal.dumps(login_info))
+            s.sendall(login_request)
         except Exception:
             return redirect('/error/Could not establish connection to the server')
 
         # Receive confirmation
+        # TODO: Transform this part into secure communication
         msg = s.recv(1024).decode("utf-8")
         print(msg)
         if msg == "SUCCESS":
@@ -206,37 +213,16 @@ def signup():
         if len(new_password) == 0:
             return redirect("/error/Password left empty")
 
-        curr_timestamp = str(datetime.timestamp(datetime.now()))
         # Hash password and generate public and private keys
         hashed_password = hashlib.sha3_512(str(SALT + new_password).encode()).hexdigest()
-
-        # Prepare signup request and encrypt session id to send
-        signup_req = dict({"type":"add_user", "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED})
-        signup_req_bytes = marshal.dumps(signup_req)
-
-        # Send signup request to backend server
-        s.sendall(signup_req_bytes)
-        # try:
-        #     s.sendall(signup_req_bytes)
-        # except Exception:
-        #     return redirect('/error/Could not establish connection to the server')
         
         # Prepare data to send
-        new_user_info = dict({"username": new_username, "password": hashed_password})
-        new_user_info_bytes = marshal.dumps(new_user_info)
-        new_user_info_encryptor = CIPHER.encryptor()
-        encrypted_new_user_info = new_user_info_encryptor.update(new_user_info_bytes) + new_user_info_encryptor.finalize()
-        tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
-        tagger.update(encrypted_new_user_info + curr_timestamp.encode())
-        signature = tagger.finalize()
-        signup_info = dict({"encrypted_new_user_info":encrypted_new_user_info, "signature":signature, "curr_timestamp": curr_timestamp})
-        signup_info_bytes = marshal.dumps(signup_info)
-        print(curr_timestamp)
-        print(signature)
-        print(encrypted_new_user_info)
+        sign_up_parameters = dict({"username": new_username, "password": hashed_password})
+        sign_up_request = generate_request("signup", sign_up_parameters)
+
         # Send new user info to backend server
         try:
-            s.sendall(signup_info_bytes)
+            s.sendall(sign_up_request)
         except Exception:
             return redirect('/error/Could not establish connection to the server')
 

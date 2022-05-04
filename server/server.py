@@ -103,8 +103,10 @@ def getMessagesBetweenUsers(u1, u2):
     # The client expects tuples of messages, (content, timestamp, author)
     return [(r[4], r[3].strftime("%m/%d/%Y, %H:%M:%S"), r[1]) for r in res]
 
-# Input an int in UNIX timestamp format, check if the timestamp is valid
-# Return True if valid
+"""
+Input an int in UNIX timestamp format, check if the timestamp is valid
+Return True if valid
+"""
 def validate_timestamp(request_timestamp):
     # Validate Timestamp
     request_time = datetime.fromtimestamp(request_timestamp)
@@ -113,12 +115,11 @@ def validate_timestamp(request_timestamp):
         return False
     return True
 
-# Input signature, encrypted message, MAC key, request_timestamp check if the signature is valid
-# Return True if valid
+"""
+Input signature, encrypted message, MAC key, request_timestamp check if the signature is valid
+Return True if valid
+"""
 def validate_signature(signature, encrypted_msg, MAC_key, request_timestamp):
-    print(signature)
-    print(MAC_key)
-    print(encrypted_msg)
     # Validate Signature
     tagger = hmac.HMAC(MAC_key, hashes.SHA3_256())
     tagger.update(encrypted_msg + request_timestamp.encode())
@@ -127,6 +128,15 @@ def validate_signature(signature, encrypted_msg, MAC_key, request_timestamp):
     except:
         return False
     return True
+
+"""
+Input encrypted message of parameters and cipher,
+Decrypt the message and return a dict of parameters
+"""
+def decrypt_parameters(encrypted_parameters, cipher):
+    parameters_decryptor = cipher.decryptor()
+    decrypted_parameters_bytes = parameters_decryptor.update(encrypted_parameters) + parameters_decryptor.finalize()
+    return marshal.loads(decrypted_parameters_bytes)
 
 if __name__ == '__main__':
     # Database connection
@@ -165,26 +175,24 @@ if __name__ == '__main__':
         reqType = req["type"]
 
         # Take action depending on the type of message receieved
-        if reqType=="add_user":
-            # Retrieve sessionid and find corresponding keys
-            # TODO: Validate if session id hasn't expire
+        if reqType=="signup":
             client_sessionid_encrypted = req["sessionid_encrypted"]
-            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-            if client_sessionid not in sessionid_keys.keys():
-                # (The client hasn't have the capability to process such error, TODO)
-                cs.send(bytes("Session ID error", encoding="utf-8"))
-            client_keys = sessionid_keys[client_sessionid]
-
-            # Receive signup information from client
-            signup_info= marshal.loads(cs.recv(2048))
-            request_timestamp = signup_info['curr_timestamp']
-            signature = signup_info['signature']
-            encrypted_new_user_info = signup_info['encrypted_new_user_info']
+            request_timestamp = req['curr_timestamp']
+            signature = req['signature']
+            encrypted_new_user_info = req['encrypted_parameters']
 
             # Check timestamp
             if not validate_timestamp(int(float(request_timestamp))):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
                 continue
+
+            # Decrypt sessionid and find corresponding keys
+            # TODO: Validate if session id hasn't expire
+            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+            if client_sessionid not in sessionid_keys.keys():
+                # (The client hasn't have the capability to process such error, TODO)
+                cs.send(bytes("Session ID error", encoding="utf-8"))
+            client_keys = sessionid_keys[client_sessionid]
             
             # Check signature
             if not validate_signature(signature, encrypted_new_user_info, client_keys['MAC_key'], request_timestamp):
@@ -192,40 +200,34 @@ if __name__ == '__main__':
                 continue
 
             # Decrypt new user information
-            client_decryptor = client_keys['cipher'].decryptor()
-            decrypted_new_user_info = client_decryptor.update(encrypted_new_user_info) + client_decryptor.finalize()
-            user_info = marshal.loads(decrypted_new_user_info)
+            user_info = decrypt_parameters(encrypted_new_user_info, client_keys['cipher'])
             username = user_info['username']
             password = user_info['password']
-            add_user_to_db(db, username, password)
-            cs.send(bytes("SUCCESS", encoding="utf-8"))
-            # # Sign up
-            # try:
-            #     add_user_to_db(db, username, password)
-            #     cs.send(bytes("SUCCESS", encoding="utf-8"))
-            # except Exception as e:
-            #     cs.send(bytes("Username already taken", encoding="utf-8"))
+
+            # Sign up
+            try:
+                add_user_to_db(db, username, password)
+                cs.send(bytes("SUCCESS", encoding="utf-8"))
+            except Exception as e:
+                cs.send(bytes("Username already taken", encoding="utf-8"))
 
         elif req["type"]=="login":
-            # Retrieve sessionid and find corresponding keys
-            # TODO: Validate if session id hasn't expire
             client_sessionid_encrypted = req["sessionid_encrypted"]
-            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-            if client_sessionid not in sessionid_keys.keys():
-                # (The client hasn't have the capability to process such error, TODO)
-                cs.send(bytes("Session ID error", encoding="utf-8"))
-            client_keys = sessionid_keys[client_sessionid]
-
-            # Receive Login Info from client
-            login_info= marshal.loads(cs.recv(2048))
-            encrypted_user_info = login_info['encrypted_user_info']
-            request_timestamp = login_info['curr_timestamp']
-            signature = login_info['signature']
+            encrypted_user_info = req['encrypted_parameters']
+            request_timestamp = req['curr_timestamp']
+            signature = req['signature']
 
             # Check timestamp
             if not validate_timestamp(int(float(request_timestamp))):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
                 continue
+
+            # Find keys corresponding to client sessionid
+            # TODO: Validate if session id hasn't expire
+            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+            if client_sessionid not in sessionid_keys.keys():
+                cs.send(bytes("Session ID error", encoding="utf-8"))
+            client_keys = sessionid_keys[client_sessionid]            
 
             # Check signature
             if not validate_signature(signature, encrypted_user_info, client_keys['MAC_key'], request_timestamp):
@@ -233,9 +235,7 @@ if __name__ == '__main__':
                 continue
 
             # Decrypt user information
-            client_decryptor = client_keys['cipher'].decryptor()
-            decrypted_user_info = client_decryptor.update(encrypted_user_info) + client_decryptor.finalize()
-            user_info = marshal.loads(decrypted_user_info)
+            user_info = decrypt_parameters(encrypted_user_info, client_keys['cipher'])
             username = user_info['username']
             password = user_info['password']
             
@@ -246,7 +246,6 @@ if __name__ == '__main__':
                 else:
                     cs.send(bytes("Failure logging in", encoding="utf-8"))
             except:
-
                 cs.send(bytes("Error", encoding="utf-8"))
 
         elif reqType=="getUsers":
