@@ -52,39 +52,12 @@ def login(db, username, password, session_id):
     if(len(res) > 0):
         expectedPw = hashlib.sha3_512((str(session_id)+res[0][0]).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
-            # # Try adding public key and session id
-            # try:
-            #     cursor = db.cursor()
-            #     cursor.execute(f"UPDATE users SET public_key=%sWHERE username=%s", (str(pubkey),str(username)))
-            #     db.commit()
-            # except Exception as e:
-            #     print("Failed to update the public key for real")
-            #     print(e)
-            #     return False
-
-            # Try adding session id
-            try:
-                cursor = db.cursor()
-                cursor.execute(f"INSERT INTO sessions(sessionid, username) VALUES (%s, %s)", (str(session_id), str(username)))
-                db.commit()
-            except Exception as e:
-                print("Failed to update the session id")
-                print(e)
-                return False
-
             sessionIdToUsername[sessionid] = username
             usersOnline.add(username)
             return True
         else:
             print("Failed to login the user")
     return False
-
-def getUsers():
-    print("Getting users")
-    cursor = db.cursor()
-    cursor.execute(f"SELECT username FROM users")
-    res = cursor.fetchall()
-    return [r[0] for r in res]
 
 def addMsgToDb(author, recipient, content):
     try:
@@ -99,7 +72,7 @@ def addMsgToDb(author, recipient, content):
 def getMessagesBetweenUsers(u1, u2):
     print(f"Getting messages between {u1} and {u2}")
     cursor = db.cursor()
-    cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s)", (str(u1), str(u2), str(u2), str(u1)))
+    cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s) ORDER BY timeSent", (str(u1), str(u2), str(u2), str(u1)))
     res = cursor.fetchall()
 
     # The client expects tuples of messages, (content, timestamp, author)
@@ -205,7 +178,8 @@ if __name__ == '__main__':
             client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
             if client_sessionid not in sessionid_keys.keys():
                 # (The client hasn't have the capability to process such error, TODO)
-                cs.send(bytes("Session ID error", encoding="utf-8"))
+                res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Session ID error"})
+                cs.send(res)
             client_keys = sessionid_keys[client_sessionid]
 
             # Decrypt parameters
@@ -215,12 +189,14 @@ if __name__ == '__main__':
 
             # Check timestamp
             if not validate_timestamp(int(float(request_timestamp))):
-                cs.send(bytes("Please restart application", encoding="utf-8"))
+                res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Please restart application"})
+                cs.send(res)
                 continue
             
             # Check signature
             if not validate_signature(signature, encrypted_parameters, client_keys['MAC_key'], request_timestamp):
-                cs.send(bytes("Signature Mismatch", encoding="utf-8"))
+                res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Signature Mismatch"})
+                cs.send(res)
                 continue
 
             # Take action depending on the type of message receieved
@@ -257,7 +233,12 @@ if __name__ == '__main__':
                     cs.send(res)
 
             elif reqType=="getUsers": # TODO: encrypt
-                users = getOnlineUsers()
+                users = list(usersOnline)
+                print("Users online: ", users)
+                try:
+                    users.remove(sessionIdToUsername[client_sessionid])
+                except:
+                    print("User doesn't currently have a session...")
                 res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "users": str(users)})
                 cs.send(res)
             elif reqType=="sendMsg": # TODO: encrypt
@@ -273,21 +254,20 @@ if __name__ == '__main__':
                         res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure sending message"})
                         cs.send(res)
                 else:
-                    cs.send(bytes("Failure sending message", encoding="utf-8"))
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure sending message"})
+                    cs.send(res)
 
             elif reqType=="getMessages": # TODO: encrypt
                 if client_sessionid in sessionIdToUsername.keys():
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
                     messages = getMessagesBetweenUsers(author, recipient)
-                    if messages:
-                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "messages": str(messages)})
-                        cs.send(res)
-                    else:
-                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure getting messages"})
-                        cs.send(res)
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "messages": str(messages)})
+                    cs.send(res)
                 else:
-                    cs.send(bytes("Failure getting messages", encoding="utf-8"))
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure getting messages"})
+                    cs.send(res)
+
         else: # if a request doesn't have a session id, we know it's a request for setup       
             # Receive client public key
             client_public_pem = req['client_public_pem']

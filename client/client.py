@@ -1,8 +1,9 @@
-from flask import Flask, render_template, request, redirect
+from flask import Flask, render_template, request, redirect, url_for, session
 from flask_sqlalchemy import SQLAlchemy
 import socket
 import json
 import hashlib
+import sys
 import marshal
 from datetime import datetime
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -13,6 +14,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 # Misc globals
 PUB_KEY_LENGTH = 180 # TODO we need to optimize this
 SALT='DcU5opPnT#vXX*S2gjtoQLo@g'
+DEFAULT_PORT = 5000
 
 # Session variables
 CUR_USER = None # current logged in user
@@ -28,6 +30,7 @@ IV = None
 CIPHER = None
 
 app = Flask(__name__)
+app.secret_key = "yE2Mcr3*zCHex8K3XkdNhXRnp" # used to encrypt session data on client
 
 class User():
     def __init__(self, username):
@@ -142,9 +145,9 @@ def chat():
             users = eval(decrypted_payload["users"])
             return render_template('chat_select_user.html', users=[User(username) for username in users])
         else:
-            return redirect("error/"+msg)
+            return redirect("/error/"+msg)
     else:
-        return redirect("error/MAC tag from server was invalid")
+        return redirect("/error/MAC tag from server was invalid")
 
 
 @app.route("/chatWith/<userChattingWith>", methods=['POST', 'GET'])
@@ -172,9 +175,9 @@ def chatWith(userChattingWith):
             msg = decrypted_payload["msg"]
             if msg == "SUCCESS":
                 return redirect("/chatWith/"+userChattingWith)
-            return redirect("error/"+msg)
+            return redirect("/error/"+msg)
         else:
-            return redirect("error/MAC tag from server was incorrect")
+            return redirect("/error/MAC tag from server was incorrect")
     else:
         # Connect to the server
         success, s = connectToServer()
@@ -197,10 +200,10 @@ def chatWith(userChattingWith):
             msg = decrypted_payload["msg"]
             if msg == "SUCCESS":
                 messages = eval(decrypted_payload["messages"])
-                return render_template('chat.html', userChattingWith=userChattingWith, messages=[Message(m[0], m[1], m[2]) for m in messages])
-            return redirect("error/"+msg)
+                return render_template('chat.html', userChattingWith=userChattingWith, messages=[Message(m[0], m[1], m[2]) for m in messages])                
+            return redirect("/error/"+msg)
         else:
-            return redirect("error/Could not get messages with " + userChattingWith + " from the server")
+            return redirect("/error/Could not get messages with " + userChattingWith + " from the server")
 
 @app.route("/login", methods=['POST', 'GET'])
 def login():
@@ -239,12 +242,18 @@ def login():
         if valid_res:
             msg = decrypted_payload["msg"]
             if msg == "SUCCESS":
+                session["username"] = username
                 return(redirect("/chat"))
-            return redirect("error/"+msg)
+            return redirect("/error/"+msg)
         else:
-            return redirect("error/MAC tag from server was invalid")
+            return redirect("/error/MAC tag from server was invalid")
     else:
         return render_template('login.html')
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
 
 @app.route("/signup", methods=['POST', 'GET'])
 def signup():
@@ -282,9 +291,9 @@ def signup():
             msg = decrypted_payload["msg"]
             if msg == "SUCCESS":
                 return(redirect("/chat"))
-            return redirect("error/Username already taken")
+            return redirect("/error/Username already taken")
         else:
-            return redirect("error/MAC tag from server was invalid")
+            return redirect("/error/MAC tag from server was invalid")
     else:
         return render_template('signup.html')
 
@@ -328,4 +337,7 @@ if __name__ == "__main__":
     print("Set up successfully!")
 
     # Initiate Flask application
-    app.run()
+    port = DEFAULT_PORT
+    if len(sys.argv) > 1:
+        port = sys.argv[1]
+    app.run(host="localhost", port=port)

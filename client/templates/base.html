@@ -2,8 +2,20 @@
 <html>
   <head>
     <title>Encrypted Instant Messaging</title>
+    <link rel="stylesheet" href="{{ url_for('static',filename='css/header.css') }}">
   </head>
   <body>
+    <div class="header"> <!-- with help from https://www.w3schools.com/howto/howto_css_responsive_header.asp -->
+      <a href="/" class="logo">SafeChat</a>
+      <div class="header-right">
+        {% if session['username']%}
+        <a class="active" href="/chat">Chat</a>
+        <a href="/logout">{{ session['username'] }} (click to logout) </a>
+        {% else %}
+        <a href="/login">Login</a>
+        {% endif %}
+      </div>
+    </div>
     {% block body %}{% endblock %}
   </body>
 </html>
