@@ -55,23 +55,6 @@ def connectToServer():
         return (False, s)
 
 """
-Sends a dictionary through a web socket to the server.
-"""
-def send_dict_to_server(s, data):
-    # Add session id to the message if applicable
-    print("SENDING TO SERVER: ", data)
-    if "cur_session_id" in session:
-        data["sessionid"] = session["cur_session_id"]
-
-    # TODO: add MAC/digital signature to messages
-    json_data = json.dumps(data)
-    try:
-        s.sendall(bytes(json_data, encoding="utf-8"))
-        return True
-    except Exception:
-        return False
-
-"""
 Input a string of request type ("login"/"signup"/"chat"/...) 
 and a dict of function parameters ({"username":..., "password":...}),
 Output initial request to server
@@ -82,17 +65,56 @@ encrypted_parameters    Request Parameters (dict) symmetrically encrypted with p
 signature               Signature generated with MAC key, encrypted_parameters and timestamp
 curr_timestamp          UNIX Timestamp-like timestamp at request
 """
-def generate_request(request_type, parameters):
+def generate_request(parameters):
     curr_timestamp = str(datetime.timestamp(datetime.now()))
+    parameters["curr_timestamp"] = curr_timestamp
     parameters_bytes = marshal.dumps(parameters)
     parameters_encryptor = CIPHER.encryptor()
     encrypted_parameters = parameters_encryptor.update(parameters_bytes) + parameters_encryptor.finalize()
     tagger = hmac.HMAC(MAC_KEY, hashes.SHA3_256())
     tagger.update(encrypted_parameters + curr_timestamp.encode())
     signature = tagger.finalize()
-    request_dict = dict({"type": request_type, "sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED, "encrypted_parameters": encrypted_parameters, "signature":signature, "curr_timestamp": curr_timestamp})
+    request_dict = dict({"sessionid_encrypted": CUR_SESSION_ID_ENCRYPTED, "encrypted_parameters": encrypted_parameters, "signature":signature})
     print(request_dict)
     return marshal.dumps(request_dict)
+
+"""
+Input signature, encrypted message, MAC key, request_timestamp check if the signature is valid
+Return True if valid
+"""
+def validate_signature (signature, encrypted_msg, MAC_key, request_timestamp):
+    # Validate Signature
+    tagger = hmac.HMAC(MAC_key, hashes.SHA3_256())
+    tagger.update(encrypted_msg + request_timestamp.encode())
+    try:
+        tagger.verify(signature)
+    except:
+        return False
+    return True
+
+"""
+Input symetrically encrypted data
+Output the decryped data
+"""
+def decrypt_symetrically(encrypted_data):
+    data_decryptor = CIPHER.decryptor()
+    decrypted_data_bytes = data_decryptor.update(encrypted_data) + data_decryptor.finalize()
+    return marshal.loads(decrypted_data_bytes)
+
+def decrypt_and_validate_response(encrypted_res):
+    marshaled_encrypted_res = marshal.loads(encrypted_res)
+    print("Encrypted login response: ", marshaled_encrypted_res)
+
+    # Decrypt the login response
+    decrypted_res = decrypt_symetrically(marshaled_encrypted_res["payload"])
+    print("Decrypted login response: ", decrypted_res)
+
+    # Validate the MAC tag
+    timestamp = decrypted_res["curr_timestamp"]
+    if not validate_signature(marshaled_encrypted_res["signature"], marshaled_encrypted_res["payload"], MAC_KEY, timestamp):
+        return False, None
+    
+    return True, decrypted_res
 
 @app.route("/")
 def index():
@@ -106,18 +128,28 @@ def chat():
         return redirect("/error/Error connecting to the server")
 
     # Get the users from the server
-    reqForUsers = {"type": "getUsers"}
-    successfullySent = send_dict_to_server(s, reqForUsers)
-    if not successfullySent:
-        return redirect("/error/Error getting users from the server")
-    users =  eval(s.recv(2048).decode("utf-8"))
+    getUsersReq = generate_request({"reqType": "getUsers"})
+    try:
+        s.sendall(getUsersReq)
+    except Exception:
+        return redirect('/error/Could not establish connection to the server')
 
-    return render_template('chat_select_user.html', users=[User(username) for username in users])
+    # Receive confirmation
+    valid_res, decrypted_payload = decrypt_and_validate_response(s.recv(2048))
+    if valid_res:
+        msg = decrypted_payload["msg"]
+        if msg=="SUCCESS":
+            users = eval(decrypted_payload["users"])
+            return render_template('chat_select_user.html', users=[User(username) for username in users])
+        else:
+            return redirect("error/"+msg)
+    else:
+        return redirect("error/MAC tag from server was invalid")
+
 
 @app.route("/chatWith/<userChattingWith>", methods=['POST', 'GET'])
 def chatWith(userChattingWith):
     if request.method == 'POST':
-        print("Want to send a msg")
         # Connect to server
         content = request.form['content']
         success, s = connectToServer()
@@ -125,18 +157,24 @@ def chatWith(userChattingWith):
             return redirect("/error/Error connecting to the server")
         
         # Send message to the server
-        reqToSendMessage = {"type": "sendMsg", "recipient": userChattingWith, "content": content}
-        successfullySent = send_dict_to_server(s, reqToSendMessage)
-        if not successfullySent:
-            return redirect("/error/Error sending message to the server")
+        params = {"reqType": "sendMsg", "recipient": userChattingWith, "content": content}
+        reqToSendMsg = generate_request(params)
+        
+        # Send login request to backend server
+        try:
+            s.sendall(reqToSendMsg)
+        except Exception:
+            return redirect('/error/Could not establish connection to the server')
 
-        # Receive confirmation from the server
-        msg = s.recv(1024).decode("utf-8")
-        print("Received message from server")
-        print(msg)
-        if msg == "SUCCESS":
-            return(redirect("/chatWith/"+userChattingWith))
-        return redirect("error/Error logging in")
+        # Receive confirmation
+        valid_res, decrypted_payload = decrypt_and_validate_response(s.recv(2048))
+        if valid_res:
+            msg = decrypted_payload["msg"]
+            if msg == "SUCCESS":
+                return redirect("/chatWith/"+userChattingWith)
+            return redirect("error/"+msg)
+        else:
+            return redirect("error/MAC tag from server was incorrect")
     else:
         # Connect to the server
         success, s = connectToServer()
@@ -144,15 +182,25 @@ def chatWith(userChattingWith):
             return redirect("/error/Error connecting to the server")
 
         # Get the messages from the server
-        reqForMessages = {"type": "getMessages", "recipient": userChattingWith}
-        successfullySent = send_dict_to_server(s, reqForMessages)
-        if not successfullySent:
-            return redirect("/error/Error getting users from the server")
-        messages =  eval(s.recv(2048).decode("utf-8"))
-        print(messages)
+        params = {"reqType": "getMessages", "recipient": userChattingWith}
+        reqForMessages = generate_request(params)
+        
+        # Send login request to backend server
+        try:
+            s.sendall(reqForMessages)
+        except Exception:
+            return redirect('/error/Could not establish connection to the server')
 
-        return render_template('chat.html', userChattingWith=userChattingWith, messages=[Message(m[0], m[1], m[2]) for m in messages])
-        # return render_template('chat.html', userChattingWith=userChattingWith, messages=[])
+        # Receive confirmation
+        valid_res, decrypted_payload = decrypt_and_validate_response(s.recv(2048))
+        if valid_res:
+            msg = decrypted_payload["msg"]
+            if msg == "SUCCESS":
+                messages = eval(decrypted_payload["messages"])
+                return render_template('chat.html', userChattingWith=userChattingWith, messages=[Message(m[0], m[1], m[2]) for m in messages])
+            return redirect("error/"+msg)
+        else:
+            return redirect("error/Could not get messages with " + userChattingWith + " from the server")
 
 @app.route("/login", methods=['POST', 'GET'])
 def login():
@@ -177,8 +225,8 @@ def login():
         hashed_password_with_session_id = hashlib.sha3_512((str(CUR_SESSION_ID) + hashed_password).encode()).hexdigest()
 
         # Prepare login request and encrypt session id to send
-        login_parameters = dict({"username":username, "password": hashed_password_with_session_id})
-        login_request = generate_request("login", login_parameters)
+        login_parameters = dict({"reqType": "login", "username":username, "password": hashed_password_with_session_id})
+        login_request = generate_request(login_parameters)
 
         # Send login request to backend server
         try:
@@ -187,12 +235,14 @@ def login():
             return redirect('/error/Could not establish connection to the server')
 
         # Receive confirmation
-        # TODO: Transform this part into secure communication
-        msg = s.recv(1024).decode("utf-8")
-        print(msg)
-        if msg == "SUCCESS":
-            return(redirect("/chat"))
-        return redirect("error/Error logging in")
+        valid_res, decrypted_payload = decrypt_and_validate_response(s.recv(2048))
+        if valid_res:
+            msg = decrypted_payload["msg"]
+            if msg == "SUCCESS":
+                return(redirect("/chat"))
+            return redirect("error/"+msg)
+        else:
+            return redirect("error/MAC tag from server was invalid")
     else:
         return render_template('login.html')
 
@@ -217,8 +267,8 @@ def signup():
         hashed_password = hashlib.sha3_512(str(SALT + new_password).encode()).hexdigest()
         
         # Prepare data to send
-        sign_up_parameters = dict({"username": new_username, "password": hashed_password})
-        sign_up_request = generate_request("signup", sign_up_parameters)
+        sign_up_parameters = dict({"reqType": "signup", "username": new_username, "password": hashed_password})
+        sign_up_request = generate_request(sign_up_parameters)
 
         # Send new user info to backend server
         try:
@@ -227,11 +277,14 @@ def signup():
             return redirect('/error/Could not establish connection to the server')
 
         # Receive confirmation
-        msg = s.recv(1024)
-        print(msg)
-        if msg.decode("utf-8") == "SUCCESS":
-            return(redirect("newUserSuccess"))
-        return redirect("error/Username already taken")
+        valid_res, decrypted_payload = decrypt_and_validate_response(s.recv(2048))
+        if valid_res:
+            msg = decrypted_payload["msg"]
+            if msg == "SUCCESS":
+                return(redirect("/chat"))
+            return redirect("error/Username already taken")
+        else:
+            return redirect("error/MAC tag from server was invalid")
     else:
         return render_template('signup.html')
 
@@ -256,8 +309,7 @@ if __name__ == "__main__":
     
     # Send setup request along with client public key to server
     setup_req = marshal.dumps(dict({'type':'setup', 'client_public_pem': CLIENT_PUBLIC_PEM}))
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((socket.gethostname(), 5003))
+    _, s = connectToServer()
     s.sendall(setup_req)
     
     # Receive server public key, private keys and session id

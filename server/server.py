@@ -25,6 +25,7 @@ SESSION_TTL_HOURS = 6
 sessionid_keys = dict()
 
 sessionIdToUsername = dict()
+usersOnline = set()
 
 def cryptSecureRandomNum():
     return SystemRandom().random()
@@ -72,6 +73,7 @@ def login(db, username, password, session_id):
                 return False
 
             sessionIdToUsername[sessionid] = username
+            usersOnline.add(username)
             return True
         else:
             print("Failed to login the user")
@@ -138,6 +140,26 @@ def decrypt_parameters(encrypted_parameters, cipher):
     decrypted_parameters_bytes = parameters_decryptor.update(encrypted_parameters) + parameters_decryptor.finalize()
     return marshal.loads(decrypted_parameters_bytes)
 
+"""
+Input a cipher, mac key, and a payload
+Output the symetrically encrypted marshaled payload with a MAC tag
+"""
+def symetrically_encrypt_and_marshall(cipher, mac_key, payload):
+    curr_timestamp = str(datetime.timestamp(datetime.now()))
+
+    # Encrypt the payload
+    payload["curr_timestamp"] = curr_timestamp
+    payload_bytes = marshal.dumps(payload)
+    payload_encryptor = cipher.encryptor()
+    encrypted_payload = payload_encryptor.update(payload_bytes) + payload_encryptor.finalize()
+
+    # Generate the MAC tag
+    tagger = hmac.HMAC(mac_key, hashes.SHA3_256())
+    tagger.update(encrypted_payload + curr_timestamp.encode())
+    signature = tagger.finalize()
+
+    return marshal.dumps({"signature": signature, "payload": encrypted_payload})
+
 if __name__ == '__main__':
     # Database connection
     load_dotenv()
@@ -171,115 +193,102 @@ if __name__ == '__main__':
         cs, address = s.accept()
 
         req = marshal.loads(cs.recv(2048))
-        # print("Received message", req)
-        reqType = req["type"]
 
-        # Take action depending on the type of message receieved
-        if reqType=="signup":
+        if "sessionid_encrypted" in req.keys(): # This client already has a session ID
+
+            # Get params from request
             client_sessionid_encrypted = req["sessionid_encrypted"]
-            request_timestamp = req['curr_timestamp']
             signature = req['signature']
-            encrypted_new_user_info = req['encrypted_parameters']
+            encrypted_parameters = req['encrypted_parameters']
 
-            # Check timestamp
-            if not validate_timestamp(int(float(request_timestamp))):
-                cs.send(bytes("Please restart application", encoding="utf-8"))
-                continue
-
-            # Decrypt sessionid and find corresponding keys
-            # TODO: Validate if session id hasn't expire
+            # Decrypt sessionid and find corresponding keys. TODO: Validate if session id hasn't expire
             client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
             if client_sessionid not in sessionid_keys.keys():
                 # (The client hasn't have the capability to process such error, TODO)
                 cs.send(bytes("Session ID error", encoding="utf-8"))
             client_keys = sessionid_keys[client_sessionid]
-            
-            # Check signature
-            if not validate_signature(signature, encrypted_new_user_info, client_keys['MAC_key'], request_timestamp):
-                cs.send(bytes("Signature Mismatch", encoding="utf-8"))
-                continue
 
-            # Decrypt new user information
-            user_info = decrypt_parameters(encrypted_new_user_info, client_keys['cipher'])
-            username = user_info['username']
-            password = user_info['password']
-
-            # Sign up
-            try:
-                add_user_to_db(db, username, password)
-                cs.send(bytes("SUCCESS", encoding="utf-8"))
-            except Exception as e:
-                cs.send(bytes("Username already taken", encoding="utf-8"))
-
-        elif req["type"]=="login":
-            client_sessionid_encrypted = req["sessionid_encrypted"]
-            encrypted_user_info = req['encrypted_parameters']
-            request_timestamp = req['curr_timestamp']
-            signature = req['signature']
+            # Decrypt parameters
+            decrypted_parameters = decrypt_parameters(encrypted_parameters, client_keys['cipher'])
+            request_timestamp = decrypted_parameters['curr_timestamp']
+            reqType = decrypted_parameters['reqType']
 
             # Check timestamp
             if not validate_timestamp(int(float(request_timestamp))):
                 cs.send(bytes("Please restart application", encoding="utf-8"))
                 continue
-
-            # Find keys corresponding to client sessionid
-            # TODO: Validate if session id hasn't expire
-            client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-            if client_sessionid not in sessionid_keys.keys():
-                cs.send(bytes("Session ID error", encoding="utf-8"))
-            client_keys = sessionid_keys[client_sessionid]            
-
+            
             # Check signature
-            if not validate_signature(signature, encrypted_user_info, client_keys['MAC_key'], request_timestamp):
+            if not validate_signature(signature, encrypted_parameters, client_keys['MAC_key'], request_timestamp):
                 cs.send(bytes("Signature Mismatch", encoding="utf-8"))
                 continue
 
-            # Decrypt user information
-            user_info = decrypt_parameters(encrypted_user_info, client_keys['cipher'])
-            username = user_info['username']
-            password = user_info['password']
-            
-            # Login
-            try:
-                if (login(db, username, password, client_sessionid)):
-                    cs.send(bytes("SUCCESS", encoding="utf-8"))
-                else:
-                    cs.send(bytes("Failure logging in", encoding="utf-8"))
-            except:
-                cs.send(bytes("Error", encoding="utf-8"))
+            # Take action depending on the type of message receieved
+            if reqType=="signup":
 
-        elif reqType=="getUsers":
-            print("Sending users...")
-            cs.send(str(getUsers()).encode())
-            print("Users sent!")
-        elif reqType=="sendMsg":
-            sessionid = req["sessionid"]
-            if sessionid in sessionIdToUsername.keys():
-                author = sessionIdToUsername[sessionid]
-                recipient = req["recipient"]
-                content = req["content"]
-                success = addMsgToDb(author, recipient, content)
-                if success:
-                    cs.send(bytes("SUCCESS", encoding="utf-8"))
+                # Decrypt new user information
+                username = decrypted_parameters['username']
+                password = decrypted_parameters['password']
+
+                # Sign up
+                try:
+                    add_user_to_db(db, username, password)
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS"})
+                    cs.send(res)
+                except Exception as e:
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Username already taken"})
+                    cs.send(res)
+
+            elif reqType=="login":
+                # Decrypt user information
+                username = decrypted_parameters['username']
+                password = decrypted_parameters['password']
+                
+                # Login
+                try:
+                    if (login(db, username, password, client_sessionid)):
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS"})
+                        cs.send(res)
+                    else:
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure logging in"})
+                        cs.send(res)
+                except:
+                    res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Error"})
+                    cs.send(res)
+
+            elif reqType=="getUsers": # TODO: encrypt
+                users = getOnlineUsers()
+                res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "users": str(users)})
+                cs.send(res)
+            elif reqType=="sendMsg": # TODO: encrypt
+                if client_sessionid in sessionIdToUsername.keys():
+                    author = sessionIdToUsername[client_sessionid]
+                    recipient = decrypted_parameters["recipient"]
+                    content = decrypted_parameters["content"]
+                    success = addMsgToDb(author, recipient, content)
+                    if success:
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS"})
+                        cs.send(res)
+                    else:
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure sending message"})
+                        cs.send(res)
                 else:
                     cs.send(bytes("Failure sending message", encoding="utf-8"))
-            else:
-                cs.send(bytes("Failure sending message", encoding="utf-8"))
 
-        elif reqType=="getMessages":
-            sessionid = req["sessionid"]
-            if sessionid in sessionIdToUsername.keys():
-                author = sessionIdToUsername[sessionid]
-                recipient = req["recipient"]
-                messages = getMessagesBetweenUsers(author, recipient)
-                if messages:
-                    cs.send(str(messages).encode())
+            elif reqType=="getMessages": # TODO: encrypt
+                if client_sessionid in sessionIdToUsername.keys():
+                    author = sessionIdToUsername[client_sessionid]
+                    recipient = decrypted_parameters["recipient"]
+                    messages = getMessagesBetweenUsers(author, recipient)
+                    if messages:
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "messages": str(messages)})
+                        cs.send(res)
+                    else:
+                        res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure getting messages"})
+                        cs.send(res)
                 else:
                     cs.send(bytes("Failure getting messages", encoding="utf-8"))
-            else:
-                cs.send(bytes("Failure getting messages", encoding="utf-8"))
-
-        elif reqType=="setup":
+        else: # if a request doesn't have a session id, we know it's a request for setup       
             # Receive client public key
             client_public_pem = req['client_public_pem']
             client_public_key = serialization.load_pem_public_key(client_public_pem)
