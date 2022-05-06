@@ -33,9 +33,12 @@ def get_key_pair():
     return "tempPublic"+str(datetime.now()), "tempPrivate"+str(datetime.now()) # TODO
 
 def add_user_to_db(db, username, password):
+    new_user_key = os.urandom(32)
+    new_user_iv = os.urandom(16)
+    new_user_key_encrypted = SERVER_PUBLIC_KEY.encrypt(new_user_key, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+    new_user_iv_encrypted = SERVER_PUBLIC_KEY.encrypt(new_user_iv, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
     cursor = db.cursor()
-
-    cursor.execute(f"INSERT INTO users(username, password) VALUES (%s, %s)", (str(username), str(password)))
+    cursor.execute(f"INSERT INTO users(username, password, private_key, iv) VALUES (%s, %s, %s, %s)", (str(username), str(password), new_user_key_encrypted, new_user_iv_encrypted))
     db.commit()
 
     print(cursor.rowcount, "record inserted.")
@@ -55,10 +58,24 @@ def login(db, username, password, session_id):
             print("Failed to login the user")
     return False
 
-def addMsgToDb(author, recipient, content, cipher):
-    # Encrypt the message with author's private key
-    encrypted_content = encrypt_message(cipher, content)
+def getCipherFromDB(username):
+    cursor = db.cursor()
+    cursor.execute(f"SELECT private_key, iv FROM users WHERE username=%s", (username))
+    res = cursor.fetchall()
+    user_private_key_encrypted = res[0][0]
+    user_iv_encrypted = res[0][1]
+    user_private_key = SERVER_PRIVATE_KEY.decrypt(user_private_key_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+    user_iv = SERVER_PRIVATE_KEY.decrypt(user_iv_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+    user_cipher = Cipher(algorithms.AES(user_private_key), modes.CTR(user_iv))
+    return user_cipher
+
+def addMsgToDb(author, recipient, content):
     try:
+        # Retrieve author cipher
+        author_cipher = getCipherFromDB(author)
+
+        # Encrypt the message with author's private key
+        encrypted_content = encrypt_message(author_cipher, content)
         cursor = db.cursor()
         cursor.execute(f"INSERT INTO messages(author, recipient, content) VALUES (%s, %s, %s)", (str(author), str(recipient), encrypted_content))
         db.commit()
@@ -68,6 +85,11 @@ def addMsgToDb(author, recipient, content, cipher):
         return False
 
 def getMessagesBetweenUsers(u1, u2):
+    # Get author and recipient cipher
+    author_cipher = getCipherFromDB(u1)
+    recipient_cipher = getCipherFromDB(u2)
+    cipher_dict = {u1: author_cipher, u2: recipient_cipher}
+
     print(f"Getting messages between {u1} and {u2}")
     cursor = db.cursor()
     cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s) ORDER BY timeSent", (str(u1), str(u2), str(u2), str(u1)))
@@ -78,8 +100,7 @@ def getMessagesBetweenUsers(u1, u2):
         author = r[1]
         timeSent = r[3].strftime("%m/%d/%Y, %H:%M:%S")
         content = r[4]
-        cipher = sessionIdToKeys[usernameToSessionId[author]]['cipher']
-        decrypted_content = decrypt_message(cipher, content)
+        decrypted_content = decrypt_message(cipher_dict[author], content)
         messages.append((decrypted_content, timeSent, author))
     # The client expects tuples of messages, (content, timestamp, author)
     return messages
@@ -270,7 +291,7 @@ if __name__ == '__main__':
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
                     content = decrypted_parameters["content"]
-                    success = addMsgToDb(author, recipient, content, client_keys['cipher'])
+                    success = addMsgToDb(author, recipient, content)
                     if success:
                         res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS"})
                         cs.send(res)
