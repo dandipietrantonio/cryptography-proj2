@@ -2,11 +2,13 @@ from multiprocessing import set_forkserver_preload
 import socket
 import json
 import marshal
+import sys
 import pymysql
 from setuptools import setup
 from dotenv import load_dotenv
 from random import SystemRandom
 from datetime import datetime, timedelta
+from os.path import exists
 import os
 import hashlib
 import cryptography
@@ -194,18 +196,41 @@ if __name__ == '__main__':
         user="root",
         password=DB_PASSWORD
     )
+    print("DB connected!")
+    
+    # Server Public Private key setup
+    if len(sys.argv) == 3:
+        public_pem_file = sys.argv[1]
+        private_pem_file = sys.argv[2]
+    else:
+        public_pem_file = 'server_public.pem'
+        private_pem_file = 'server_private.pem'
 
-    # Initialize server public key and secret key
-    SERVER_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.public_key()
-    SERVER_PUBLIC_PEM = SERVER_PUBLIC_KEY.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    try:
+        with open(public_pem_file, 'rb') as f:
+            SERVER_PUBLIC_KEY = serialization.load_pem_public_key(f.read())
+        with open(private_pem_file, 'rb') as f:
+            SERVER_PRIVATE_KEY = serialization.load_pem_private_key(f.read(), password=None)
+        SERVER_PUBLIC_PEM = SERVER_PUBLIC_KEY.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        print("Keys Retrieved!")
+    except:
+        # Initialize server public key and secret key
+        SERVER_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        SERVER_PUBLIC_KEY = SERVER_PRIVATE_KEY.public_key()
+        SERVER_PUBLIC_PEM = SERVER_PUBLIC_KEY.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        SERVER_PRIVATE_PEM = SERVER_PRIVATE_KEY.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption())
+        with open(public_pem_file, 'wb') as f:
+            f.write(SERVER_PUBLIC_PEM)
+        with open(private_pem_file, 'wb') as f:
+            f.write(SERVER_PRIVATE_PEM)
+        print("Keys Created and Saved!")
 
     # Socket connection
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((socket.gethostname(), 5003))
     s.listen(5)
-
+    print("Listening for requests!")
     # Wait for incoming requests
     while True:
         cs, address = s.accept()
@@ -313,9 +338,13 @@ if __name__ == '__main__':
                     res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Failure getting messages"})
                     cs.send(res)
             elif reqType=="logout":
-                username = sessionIdToUsername[client_sessionid]
-                del sessionIdToUsername[client_sessionid]
-                del usernameToSessionId[username]
+                try:
+                    username = sessionIdToUsername[client_sessionid]
+                    del usernameToSessionId[username]
+                    del sessionIdToUsername[client_sessionid]
+                    print(username, "LOGGING OUT")
+                except:
+                    pass
         else: # if a request doesn't have a session id, we know it's a request for setup       
             # Receive client public key
             client_public_pem = req['client_public_pem']
