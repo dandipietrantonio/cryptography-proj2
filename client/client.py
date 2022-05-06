@@ -300,7 +300,7 @@ def signup():
         if valid_res:
             msg = decrypted_payload["msg"]
             if msg == "SUCCESS":
-                return(redirect("/chat"))
+                return(redirect("/login"))
             return redirect("/error/Username already taken")
         else:
             return redirect("/error/MAC tag from server was invalid")

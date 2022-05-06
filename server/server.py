@@ -22,10 +22,9 @@ SESSION_TTL_HOURS = 6
 
 # Cache
 # TODO: ADD TTL
-sessionid_keys = dict()
-
+sessionIdToKeys = dict()
 sessionIdToUsername = dict()
-usersOnline = set()
+usernameToSessionId = dict()
 
 def cryptSecureRandomNum():
     return SystemRandom().random()
@@ -50,16 +49,17 @@ def login(db, username, password, session_id):
         expectedPw = hashlib.sha3_512((str(session_id)+res[0][0]).encode()).hexdigest()
         if expectedPw == password: # Check if the password is valid
             sessionIdToUsername[session_id] = username
-            usersOnline.add(username)
+            usernameToSessionId[username] = session_id
             return True
         else:
             print("Failed to login the user")
     return False
 
-def addMsgToDb(author, recipient, content):
+def addMsgToDb(author, recipient, content, cipher):
+    encrypted_content = encrypt_message(cipher, content)
     try:
         cursor = db.cursor()
-        cursor.execute(f"INSERT INTO messages(author, recipient, content) VALUES (%s, %s, %s)", (str(author), str(recipient), str(content)))
+        cursor.execute(f"INSERT INTO messages(author, recipient, content) VALUES (%s, %s, %s)", (str(author), str(recipient), encrypted_content))
         db.commit()
         print(cursor.rowcount, "record inserted.")
         return True
@@ -71,9 +71,16 @@ def getMessagesBetweenUsers(u1, u2):
     cursor = db.cursor()
     cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s) ORDER BY timeSent", (str(u1), str(u2), str(u2), str(u1)))
     res = cursor.fetchall()
-
+    messages = []
+    for r in res:
+        author = r[1]
+        timeSent = r[3].strftime("%m/%d/%Y, %H:%M:%S")
+        content = r[4]
+        cipher = sessionIdToKeys[usernameToSessionId[author]]['cipher']
+        decrypted_content = decrypt_message(cipher, content)
+        messages.append((decrypted_content, timeSent, author))
     # The client expects tuples of messages, (content, timestamp, author)
-    return [(r[4], r[3].strftime("%m/%d/%Y, %H:%M:%S"), r[1]) for r in res]
+    return messages
 
 """
 Input an int in UNIX timestamp format, check if the timestamp is valid
@@ -130,6 +137,24 @@ def symetrically_encrypt_and_marshall(cipher, mac_key, payload):
 
     return marshal.dumps({"signature": signature, "payload": encrypted_payload})
 
+"""
+Input a cipher and a symmtrically encrypted message content bytes
+Output plaintext message content
+"""
+def decrypt_message(cipher, encrypted_message_bytes):
+    message_decryptor = cipher.decryptor()
+    decrypted_message_bytes = message_decryptor.update(encrypted_message_bytes) + message_decryptor.finalize()
+    return decrypted_message_bytes.decode()
+
+"""
+Input a cipher and plaintext message content bytes
+Output a symmtrically encrypted message content
+"""
+def encrypt_message(cipher, plaintext_message):
+    message_encryptor = cipher.encryptor()
+    encrypted_message_bytes = message_encryptor.update(plaintext_message.encode()) + message_encryptor.finalize()
+    return encrypted_message_bytes
+
 if __name__ == '__main__':
     # Database connection
     load_dotenv()
@@ -173,12 +198,12 @@ if __name__ == '__main__':
 
             # Decrypt sessionid and find corresponding keys. TODO: Validate if session id hasn't expire
             client_sessionid = SERVER_PRIVATE_KEY.decrypt(client_sessionid_encrypted, padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-            if client_sessionid not in sessionid_keys.keys():
+            if client_sessionid not in sessionIdToKeys.keys():
                 # (The client hasn't have the capability to process such error, TODO)
                 res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "Session ID error"})
                 cs.send(res)
                 continue
-            client_keys = sessionid_keys[client_sessionid]
+            client_keys = sessionIdToKeys[client_sessionid]
 
             # Decrypt parameters
             decrypted_parameters = decrypt_parameters(encrypted_parameters, client_keys['cipher'])
@@ -231,7 +256,7 @@ if __name__ == '__main__':
                     cs.send(res)
 
             elif reqType=="getUsers":
-                users = list(usersOnline)
+                users = list(usernameToSessionId.keys())
                 try:
                     users.remove(sessionIdToUsername[client_sessionid])
                 except:
@@ -243,7 +268,7 @@ if __name__ == '__main__':
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
                     content = decrypted_parameters["content"]
-                    success = addMsgToDb(author, recipient, content)
+                    success = addMsgToDb(author, recipient, content, client_keys['cipher'])
                     if success:
                         res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS"})
                         cs.send(res)
@@ -258,6 +283,7 @@ if __name__ == '__main__':
                     author = sessionIdToUsername[client_sessionid]
                     recipient = decrypted_parameters["recipient"]
                     messages = getMessagesBetweenUsers(author, recipient)
+
                     res = symetrically_encrypt_and_marshall(client_keys['cipher'], client_keys['MAC_key'], {"msg": "SUCCESS", "messages": str(messages)})
                     cs.send(res)
                 else:
@@ -266,7 +292,7 @@ if __name__ == '__main__':
             elif reqType=="logout":
                 username = sessionIdToUsername[client_sessionid]
                 del sessionIdToUsername[client_sessionid]
-                usersOnline.remove(username)
+                del usernameToSessionId[username]
         else: # if a request doesn't have a session id, we know it's a request for setup       
             # Receive client public key
             client_public_pem = req['client_public_pem']
@@ -283,5 +309,5 @@ if __name__ == '__main__':
             setup_reply = {'server_public_key':SERVER_PUBLIC_PEM, "setup_info_encrypted":setup_info_encrypted}
             cs.sendall(marshal.dumps(setup_reply))
             # Record client public key, private keys and iv for sessionid
-            sessionid_keys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv, "cipher":client_cipher}
+            sessionIdToKeys[sessionid] = {"client_public_key": client_public_key, "private_key": private_key, "MAC_key": MAC_key, "iv":iv, "cipher":client_cipher}
             

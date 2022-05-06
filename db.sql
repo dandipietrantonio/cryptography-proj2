@@ -27,7 +27,7 @@ CREATE TABLE `messages` (
   `author` varchar(200) NOT NULL,
   `recipient` varchar(200) NOT NULL,
   `timeSent` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `content` varchar(45) NOT NULL,
+  `content` BLOB NOT NULL,
   PRIMARY KEY (`id`),
   KEY `fk_messages_author_idx` (`author`),
   KEY `fk_messages_recipient_idx` (`recipient`),
