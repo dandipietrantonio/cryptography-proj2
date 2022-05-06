@@ -56,6 +56,7 @@ def login(db, username, password, session_id):
     return False
 
 def addMsgToDb(author, recipient, content, cipher):
+    # Encrypt the message with author's private key
     encrypted_content = encrypt_message(cipher, content)
     try:
         cursor = db.cursor()
@@ -72,6 +73,7 @@ def getMessagesBetweenUsers(u1, u2):
     cursor.execute(f"SELECT * FROM messages WHERE (author=%s AND recipient=%s) OR (author=%s AND recipient=%s) ORDER BY timeSent", (str(u1), str(u2), str(u2), str(u1)))
     res = cursor.fetchall()
     messages = []
+    # Decrypt the message with author's private id
     for r in res:
         author = r[1]
         timeSent = r[3].strftime("%m/%d/%Y, %H:%M:%S")
