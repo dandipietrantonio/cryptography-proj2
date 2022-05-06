@@ -256,6 +256,10 @@ def logout():
     # Prepare logout request
     logout_parameters = dict({"reqType": "logout"})
     logout_request = generate_request(logout_parameters)
+    # Connect to the server
+    success, s = connectToServer()
+    if not success:
+        return redirect("/error/Failed to connect to the server.")
 
     # Send logout request to backend server
     try:
